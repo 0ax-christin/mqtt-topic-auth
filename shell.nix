@@ -10,10 +10,8 @@ with pkgs; mkShell {
     (python3.withPackages (ps: [
       ps.asyncio-mqtt
       ps.paho-mqtt
-      ps.pycryptodome
       ps.cryptography
-      ps.pynacl
-      ps.noiseprotocol
+      ps.dissononce
       ps.python-dotenv
     ]))
   ];
