@@ -13,6 +13,7 @@ with pkgs; mkShell {
       ps.cryptography
       ps.dissononce
       ps.python-dotenv
+      ps.pycapnp 
     ]))
   ];
 }

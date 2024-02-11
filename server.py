@@ -51,8 +51,7 @@ def main():
 
             # -> s, se
             message_buffer = conn.recv(1024)
-            print(message_buffer, len(message_buffer))
-            server_cipherstates = server_handshakestate.read_message(bytes(message_buffer), bytearray())
+            server_cipherstates = server_handshakestate.read_messae(bytes(message_buffer), bytearray())
             
             ciphertext = conn.recv(1024)
             plaintext = server_cipherstates[0].decrypt_with_ad(b'', ciphertext)
