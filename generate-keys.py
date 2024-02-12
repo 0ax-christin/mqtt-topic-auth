@@ -16,7 +16,12 @@ def generate_ED25519_keypair():
         )
         with open('private_key.txt', 'wb') as writer:
             writer.write(private_bytes)
-       
+        public_bytes = private_key.public_key().public_bytes(
+            encoding=serialization.Encoding.Raw,
+            format=serialization.PublicFormat.Raw
+        )
+        with open('public_key.txt', 'wb') as writer:
+            writer.write(public_bytes)
     return (private_key, private_key.public_key())
 
 def main():
