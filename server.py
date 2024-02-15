@@ -93,6 +93,14 @@ def main():
             with open('server_cipherstates.pickle', 'wb') as f:
                 pickle.dump(client_cipherstates, f)
             
+            ## REGISTRATION PHASE ##
+            request = request_capnp.Request
+            ticket = ticket_capnp.Ticket
+
+            register_bytes = s.recv(64)
+            register_request = request.from_bytes(register_bytes)
+            #if register_request.requestType == 'register':
+
             ciphertext = conn.recv(1024)
             plaintext = server_cipherstates[0].decrypt_with_ad(b'', ciphertext)
             print(plaintext)

@@ -1,4 +1,8 @@
-import dissononce, logging, socket, pickle
+import dissononce, logging, socket, pickle, capnp
+
+capnp.remove_import_hook()
+request_capnp = capnp.load('capnp_schemas/request.capnp')
+ticket_capnp = capnp.load('capnp_schemas/ticket.capnp')
 
 from dissononce.processing.impl.handshakestate import HandshakeState
 from dissononce.processing.impl.symmetricstate import SymmetricState
@@ -15,6 +19,8 @@ HOST = "127.0.0.1"
 PORT = 63000 
 
 def main():
+    
+
     dissononce.logger.setLevel(logging.DEBUG)
 
     # Generate the long term static DH keypair
@@ -86,6 +92,14 @@ def main():
             # Save derived cipherstate so it can be used later
             with open('client_cipherstates.pickle', 'wb') as f:
                 pickle.dump(client_cipherstates, f)
+            
+            ## REGISTRATION PHASE ##
+            request = request_capnp.Request
+            ticket = ticket_capnp.Ticket
+
+            # Sending first register request
+            register_request = request.new_message(noNonce=None, requestType='register').to_bytes()
+            s.sendall(register_request)
             
             #Access one of the cipher states containing the key and encrypt
             ciphertext = client_cipherstates[0].encrypt_with_ad(b'', b'Hello')
