@@ -1,4 +1,4 @@
-import dissononce, logging, socket
+import dissononce, logging, socket, pickle
 
 from dissononce.processing.impl.handshakestate import HandshakeState
 from dissononce.processing.impl.symmetricstate import SymmetricState
@@ -19,7 +19,12 @@ def main():
 
     # Generate the long term static DH keypair
     client_static = X25519DH().generate_keypair()
-
+    
+    # Serializing longterm static keypair
+    with open('client_static_keypair.pickle', 'wb') as f:
+        pickle.dump(client_static, f)
+    
+    print(client_static)
 
     client_handshakestate = HandshakeState(
             SymmetricState(
@@ -70,14 +75,20 @@ def main():
 
             # -> s,se 
             message_buffer = bytearray()
+
+            # Yields two cipherState, one for client, one for server as a tuple
+            # Accessible using [0,1]
             client_cipherstates = client_handshakestate.write_message(b'', message_buffer)
+            
             # Sends public static key of client to server, does the final DH on both sides
             s.sendall(message_buffer)
-
-            # Save derived cipherstate so it can be used later?
-
+            
+            # Save derived cipherstate so it can be used later
+            with open('client_cipherstates.pickle', 'wb') as f:
+                pickle.dump(client_cipherstates, f)
+            
+            #Access one of the cipher states containing the key and encrypt
             ciphertext = client_cipherstates[0].encrypt_with_ad(b'', b'Hello')
-            print(ciphertext, type(ciphertext), len(ciphertext))
             s.sendall(ciphertext) 
         else:
             conn.close()

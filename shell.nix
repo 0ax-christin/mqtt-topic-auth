@@ -7,13 +7,13 @@ with pkgs; mkShell {
   packages = [
     git
     neovim
+    capnproto
     (python3.withPackages (ps: [
       ps.asyncio-mqtt
       ps.paho-mqtt
       ps.cryptography
       ps.dissononce
       ps.python-dotenv
-      ps.pycapnp 
     ]))
   ];
 }

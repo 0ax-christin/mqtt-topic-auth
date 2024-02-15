@@ -1,4 +1,4 @@
-import dissononce, logging, socket, os, secrets
+import dissononce, logging, socket, os, secrets, pickle
 
 from dissononce.processing.impl.handshakestate import HandshakeState
 from dissononce.processing.impl.symmetricstate import SymmetricState
@@ -30,6 +30,10 @@ def main():
 
     # Generate the long term static DH keypair
     server_static = X25519DH().generate_keypair()
+
+    # Serializing longterm static keypair
+    with open('server_static_keypair.pickle', 'wb') as f:
+        pickle.dump(server_static, f)
 
     server_handshakestate = HandshakeState(
             SymmetricState(
@@ -85,8 +89,9 @@ def main():
             message_buffer = conn.recv(1024)
             server_cipherstates = server_handshakestate.read_message(bytes(message_buffer), bytearray())
             
-            print(server_cipherstates, len(server_cipherstates))
-            print(type(server_cipherstates))
+
+            with open('server_cipherstates.pickle', 'wb') as f:
+                pickle.dump(client_cipherstates, f)
             
             ciphertext = conn.recv(1024)
             plaintext = server_cipherstates[0].decrypt_with_ad(b'', ciphertext)
