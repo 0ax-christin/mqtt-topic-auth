@@ -29,8 +29,6 @@ def main():
     # Serializing longterm static keypair
     with open('client_static_keypair.pickle', 'wb') as f:
         pickle.dump(client_static, f)
-    
-    print(client_static)
 
     client_handshakestate = HandshakeState(
             SymmetricState(
