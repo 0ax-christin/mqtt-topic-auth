@@ -27,7 +27,8 @@ def public_key_exists(public_bytes):
                     return False
 def main():
     dissononce.logger.setLevel(logging.DEBUG)
-
+    
+    # Do not generate long term pair if it already exists
     # Generate the long term static DH keypair
     server_static = X25519DH().generate_keypair()
 
