@@ -15,14 +15,14 @@ def main():
         with conn:
             public_bytes = conn.recv(1024)
             print(len(public_bytes))
-            if os.path.exists("authorized_keys"):
-                with open("authorized_keys", 'rb') as reader:
+            if os.path.exists("../authorized_keys"):
+                with open("../authorized_keys", 'rb') as reader:
                     while (current_public_bytes := reader.read(32)):
                         if current_public_bytes == public_bytes:
                             conn.sendall(b"Public key already exists in authorized_keys")
                             conn.close()
                             exit()
-            with open("authorized_keys", "ab") as writer:
+            with open("../authorized_keys", "ab") as writer:
                 writer.write(public_bytes)
             public_key = Ed25519PublicKey.from_public_bytes(public_bytes)
             conn.sendall(b'Success')
