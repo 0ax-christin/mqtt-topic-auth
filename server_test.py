@@ -23,12 +23,12 @@ def main():
             print(f"Connected by {addr}")
             
             ## assume noise handshake established
-            if os.path.exists('hmac_key.txt'):
-                with open('hmac_key.txt', 'rb') as reader:
+            if os.path.exists('keys/shared/hmac_key.txt'):
+                with open('keys/shared/hmac_key.txt', 'rb') as reader:
                     key = reader.read()
             else:
                 key = secrets.randbits(128).to_bytes(128)
-                with open('hmac_key.txt', 'wb') as writer:
+                with open('keys/shared/hmac_key.txt', 'wb') as writer:
                     writer.write(key)
                 conn.sendall(key)
 
