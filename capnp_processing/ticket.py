@@ -5,8 +5,7 @@ import hashlib
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 capnp.remove_import_hook()
-ticket_capnp = capnp.load('../capnp_schemas/ticket.capnp')
-
+ticket_capnp = capnp.load('capnp_schemas/ticket.capnp')
 
 ticket = ticket_capnp.Ticket
 
