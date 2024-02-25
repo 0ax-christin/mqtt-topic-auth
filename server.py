@@ -10,6 +10,7 @@ from dissononce.hash.blake2s import Blake2sHash
 from dissononce.extras.processing.handshakestate_guarded import GuardedHandshakeState
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+from cryptography.hazmat.primitives import hashes, hmac
 from cryptography.exceptions import InvalidSignature
 
 from authentication.challenges import generate_challenge
@@ -36,7 +37,8 @@ def public_key_exists(public_bytes):
                     return False
 def main():
     dissononce.logger.setLevel(logging.DEBUG)
-
+    request = request_capnp.Request
+    ticket = ticket_capnp.Ticket
 
     if os.path.exists('keys/server/server_static_keypair.pickle'):
         with open('keys/server/server_static_keypair.pickle', 'rb') as keypair_file:
@@ -110,11 +112,57 @@ def main():
             with open('keys/shared/server_cipherstates.pickle', 'wb') as f:
                 pickle.dump(server_cipherstates, f)
             
-            ciphertext = conn.recv(1024)
-            plaintext = server_cipherstates[0].decrypt_with_ad(b'', ciphertext)
-            print(plaintext)
-            assert plaintext == b'Hello'
+            # Every request after this is under encryption of the noise handshake
 
+            # Load shared HMAC Keys if present, else send a newly generated 128 bit key to be used as HMAC
+            if os.path.exists('keys/shared/hmac_key.txt'):
+                with open('keys/shared/hmac_key.txt', 'rb') as reader:
+                    key = reader.read()
+            else:
+                key = secrets.randbits(128).to_bytes(128)
+                with open('keys/shared/hmac_key.txt', 'wb') as writer:
+                    writer.write(key)
+                enc_key = server_cipherstates[1].encrypt_with_ad(b'', key)
+                conn.sendall(enc_key)
 
+            enc_register_req_bytes = conn.recv(1028)
+            register_req_bytes = server_cipherstates[0].decrypt_with_ad(b'', enc_register_req_bytes)
+            register_request = request.from_bytes_packed(register_req_bytes)
+            
+            if register_request.requestType == 'register':
+                challenge = generate_challenge()
+                challenge_request = generate_request(requestType='challenge',  nonce=challenge.to_bytes(64), solution=False)
+                enc_challenge_request = server_cipherstates[1].encrypt_with_ad(b'', challenge_request.to_bytes_packed())
+                conn.sendall(enc_challenge_request)
+            else:
+                conn.shutdown()
+                conn.close()
+            
+            # Receive the clients solved response
+            enc_response_req_bytes = conn.recv(1028)
+            response_req_bytes = server_cipherstates[0].decrypt_with_ad(b'', enc_response_req_bytes)
+            response_request = request.from_bytes_packed(response_req_bytes)
+
+            if response_request.requestType == 'response':
+                h = hmac.HMAC(key, hashes.BLAKE2s(32))
+                h.update(challenge.to_bytes(64))
+                try:
+                    h.verify(response_request.nonceSolution)
+                    print("Verified!!!!")
+                    success_reply = generate_request(requestType='status', status=True, statusCode=200)
+                    enc_success_reply = server_cipherstates[1].encrypt_with_ad(b'', success_reply.to_bytes_packed())
+                    conn.sendall(enc_success_reply)
+                except InvalidSignature:
+                    error_reply = generate_request(requestType='status', status=True, statusCode=401)
+                    enc_error_reply = server_cipherstates[1].encrypt_with_ad(b'', error_reply.to_bytes_packed())
+                    conn.sendall(enc_error_reply)
+                    conn.shutdown()
+                    conn.close()
+            else:
+                error_reply = generate_request(requestType='status', status=True, statusCode=400)
+                enc_error_reply = server_cipherstates[1].encrypt_with_ad(b'', error_reply.to_bytes_packed())
+                conn.sendall(enc_error_reply)
+                conn.shutdown()
+                conn.close()
 if __name__ == "__main__":
     main()
