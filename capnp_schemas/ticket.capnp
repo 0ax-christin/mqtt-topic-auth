@@ -2,13 +2,11 @@
 
 struct Ticket {
     ticketId @0 :Text;
-    # A unique ticket ID
+    # A unique ticket ID, generated as a random uuid hex string
     mqttTopic @1 :Text;
     # The devices specific authentication topic where reauthentication takes place
     mqttUsername @2 :Text;
     # The devices username by which it can publish data
-    deviceId @3 :Text;
-    # Represented by a hash of the public key
-    signature @4 :Data;
+    signature @3 :Data;
     # Authentication ticket signed with private key of server
 }

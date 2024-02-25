@@ -1,4 +1,4 @@
-import dissononce, logging, socket, pickle, capnp
+import dissononce, logging, socket, pickle, capnp, os
 
 capnp.remove_import_hook()
 request_capnp = capnp.load('capnp_schemas/request.capnp')
@@ -15,22 +15,30 @@ from dissononce.extras.processing.handshakestate_guarded import GuardedHandshake
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
+from keygen.generate_keys import generate_ED25519_keypair
+from capnp_processing.request import generate_request
+
+from cryptography.hazmat.primitives import hashes, hmac
+
 HOST = "127.0.0.1"
 PORT = 63000 
 
 def main():
-    
+    request = request_capnp.Request
+    ticket = ticket_capnp.Ticket
 
     dissononce.logger.setLevel(logging.DEBUG)
 
-    # Generate the long term static DH keypair
-    client_static = X25519DH().generate_keypair()
+    if os.path.exists('keys/client/client_static_keypair.pickle'):
+        with open('keys/client/client_static_keypair.pickle', 'rb') as keypair_file:
+            client_static = pickle.load(keypair_file)
+    else:
+        # Generate the long term static DH keypair
+        client_static = X25519DH().generate_keypair()
     
-    # Serializing longterm static keypair
-    with open('client_static_keypair.pickle', 'wb') as f:
-        pickle.dump(client_static, f)
-    
-    print(client_static)
+        # Serializing longterm static keypair
+        with open('keys/client/client_static_keypair.pickle', 'wb') as keypair_file:
+            pickle.dump(client_static, keypair_file)
 
     client_handshakestate = HandshakeState(
             SymmetricState(
@@ -42,13 +50,9 @@ def main():
             X25519DH()
         )
 
-
     client_handshakestate.initialize(XXHandshakePattern(), True, b'', s=client_static)
 
-    with open('public_key.txt', 'rb') as reader:
-        public_bytes = reader.read()
-    with open('private_key.txt', 'rb') as reader:
-        private_bytes = reader.read()
+    private_bytes, public_bytes = generate_ED25519_keypair(isBytes=True)
 
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.connect((HOST, PORT))
@@ -64,10 +68,8 @@ def main():
         s.sendall(signed_random_bits)
 
         # Receive back the result, which indicates whether authentication passed or failed
-        result = s.recv(1024)
-        print(result)
-
-        if result == b'SUCCESS':
+        result_reply = request.from_bytes_packed(s.recv(1024))
+        if result_reply.statusCode == 200:
             # -> e
             message_buffer = bytearray()
             client_handshakestate.write_message(b'', message_buffer)
@@ -90,21 +92,61 @@ def main():
             s.sendall(message_buffer)
             
             # Save derived cipherstate so it can be used later
-            with open('client_cipherstates.pickle', 'wb') as f:
+            with open('keys/shared/client_cipherstates.pickle', 'wb') as f:
                 pickle.dump(client_cipherstates, f)
-            
-            ## REGISTRATION PHASE ##
-            request = request_capnp.Request
-            ticket = ticket_capnp.Ticket
 
+            # Load the HMAC keys
+            if not os.path.exists('keys/shared/hmac_key.txt'):
+                enc_key = conn.recv(180)
+                key = client_cipherstates[1].decrypt_with_ad(b'', enc_key)
+                with open('keys/shared/hmac_key.txt', 'wb') as writer:
+                    writer.write(key)
+            else:
+                with open('keys/shared/hmac_key.txt', 'rb') as reader:
+                    key = reader.read()
+
+            ## REGISTRATION PHASE ##
             # Sending first register request
-            register_request = request.new_message(noNonce=None, requestType='register').to_bytes()
-            s.sendall(register_request)
+            register_request = generate_request(requestType='register', nonce=None, solution=False)
+            enc_register_request = client_cipherstates[0].encrypt_with_ad(b'', register_request.to_bytes_packed())
+            s.sendall(enc_register_request)
+
+            # Receive the server challenge
+            enc_challenge_req_bytes = s.recv(1028)
+            challenge_req_bytes = client_cipherstates[1].decrypt_with_ad(b'', enc_challenge_req_bytes)
+            challenge_request = request.from_bytes_packed(challenge_req_bytes)
+
+            if challenge_request.requestType == 'challenge':
+                challenge = challenge_request.nonceChallenge
+                h = hmac.HMAC(key, hashes.BLAKE2s(32))
+                h.update(challenge)
+                response = h.finalize()
+                ## Send challenge response
+                challenge_solution = generate_request(requestType='response', nonce=response, solution=True)
+                enc_challenge_solution = client_cipherstates[0].encrypt_with_ad(b'', challenge_solution.to_bytes_packed())
+                s.sendall(enc_challenge_solution)
+            else:
+                s.shutdown()
+                s.close()
             
-            #Access one of the cipher states containing the key and encrypt
-            ciphertext = client_cipherstates[0].encrypt_with_ad(b'', b'Hello')
-            s.sendall(ciphertext) 
+            enc_solution_reply_bytes = s.recv(1024)
+            solution_reply_bytes = client_cipherstates[1].decrypt_with_ad(b'', enc_solution_reply_bytes)
+            solution_reply = request.from_bytes_packed(solution_reply_bytes)
+
+            if solution_reply.statusCode != 200:
+                print("Failure!")
+                s.shutdown()
+                s.close()
+            else:
+                print("Success!")
+                # Now Expect from the server a ticket
+                # Generate capnproto ticket and send to client
+                # Server does other operations: authentication topic gen
+                # MQTT username pass gen
+                # Gen ticket ID
+            
         else:
+            conn.shutown()
             conn.close()
 
 if __name__ == "__main__":

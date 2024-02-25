@@ -1,4 +1,4 @@
-import dissononce, logging, socket, os, secrets, pickle
+import dissononce, logging, socket, os, secrets, pickle, capnp
 
 from dissononce.processing.impl.handshakestate import HandshakeState
 from dissononce.processing.impl.symmetricstate import SymmetricState
@@ -10,7 +10,17 @@ from dissononce.hash.blake2s import Blake2sHash
 from dissononce.extras.processing.handshakestate_guarded import GuardedHandshakeState
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+from cryptography.hazmat.primitives import hashes, hmac
 from cryptography.exceptions import InvalidSignature
+
+from authentication.challenges import generate_challenge
+from authentication.challenges import send_challenge
+
+from capnp_processing.request import generate_request
+
+capnp.remove_import_hook()
+request_capnp = capnp.load('capnp_schemas/request.capnp')
+ticket_capnp = capnp.load('capnp_schemas/ticket.capnp')
 
 HOST = "127.0.0.1"
 PORT = 63000
@@ -27,13 +37,19 @@ def public_key_exists(public_bytes):
                     return False
 def main():
     dissononce.logger.setLevel(logging.DEBUG)
+    request = request_capnp.Request
+    ticket = ticket_capnp.Ticket
 
-    # Generate the long term static DH keypair
-    server_static = X25519DH().generate_keypair()
-
-    # Serializing longterm static keypair
-    with open('server_static_keypair.pickle', 'wb') as f:
-        pickle.dump(server_static, f)
+    if os.path.exists('keys/server/server_static_keypair.pickle'):
+        with open('keys/server/server_static_keypair.pickle', 'rb') as keypair_file:
+            server_static = pickle.load(keypair_file)
+    else:
+        # Generate the long term static DH keypair
+        server_static = X25519DH().generate_keypair()
+    
+        # Serializing longterm static keypair
+        with open('keys/server/server_static_keypair.pickle', 'wb') as keypair_file:
+            pickle.dump(server_static, keypair_file)
 
     server_handshakestate = HandshakeState(
             SymmetricState(
@@ -65,12 +81,16 @@ def main():
                 try:
                     verify_result = public_key.verify(signed_random_bits, random_bits)
                 except InvalidSignature:
-                    conn.sendall(b'INVALID SIGNATURE, AUTH FAILED')
+                    # 401 for unauthorized, authentication failed
+                    error_reply = generate_request(requestType='status', status=True, statusCode=401)
+                    conn.sendall(error_reply.to_bytes_packed())
+                    conn.shutdown()
                     conn.close()
                     exit()
                 # If no exception has been raised, means that signature was correctly verified
                 if verify_result == None:
-                    conn.sendall(b'SUCCESS')
+                    success_reply = generate_request(requestType='status', status=True, statusCode=200)
+                    conn.sendall(success_reply.to_bytes_packed())
             
             # Receiving ephemeral public key from client
             message_buffer = conn.recv(1024)
@@ -89,26 +109,60 @@ def main():
             message_buffer = conn.recv(1024)
             server_cipherstates = server_handshakestate.read_message(bytes(message_buffer), bytearray())
             
-
-            with open('server_cipherstates.pickle', 'wb') as f:
-                pickle.dump(client_cipherstates, f)
+            with open('keys/shared/server_cipherstates.pickle', 'wb') as f:
+                pickle.dump(server_cipherstates, f)
             
-            ## REGISTRATION PHASE ##
-            request = request_capnp.Request
-            ticket = ticket_capnp.Ticket
+            # Every request after this is under encryption of the noise handshake
 
-            register_bytes = s.recv(64)
-            register_request = request.from_bytes(register_bytes)
-            #if register_request.requestType == 'register':
+            # Load shared HMAC Keys if present, else send a newly generated 128 bit key to be used as HMAC
+            if os.path.exists('keys/shared/hmac_key.txt'):
+                with open('keys/shared/hmac_key.txt', 'rb') as reader:
+                    key = reader.read()
+            else:
+                key = secrets.randbits(128).to_bytes(128)
+                with open('keys/shared/hmac_key.txt', 'wb') as writer:
+                    writer.write(key)
+                enc_key = server_cipherstates[1].encrypt_with_ad(b'', key)
+                conn.sendall(enc_key)
 
-            ciphertext = conn.recv(1024)
-            plaintext = server_cipherstates[0].decrypt_with_ad(b'', ciphertext)
-            print(plaintext)
-            assert plaintext == b'Hello'
-
-            #conn.sendall(data)
-
+            enc_register_req_bytes = conn.recv(1028)
+            register_req_bytes = server_cipherstates[0].decrypt_with_ad(b'', enc_register_req_bytes)
+            register_request = request.from_bytes_packed(register_req_bytes)
             
+            if register_request.requestType == 'register':
+                challenge = generate_challenge()
+                challenge_request = generate_request(requestType='challenge',  nonce=challenge.to_bytes(64), solution=False)
+                enc_challenge_request = server_cipherstates[1].encrypt_with_ad(b'', challenge_request.to_bytes_packed())
+                conn.sendall(enc_challenge_request)
+            else:
+                conn.shutdown()
+                conn.close()
+            
+            # Receive the clients solved response
+            enc_response_req_bytes = conn.recv(1028)
+            response_req_bytes = server_cipherstates[0].decrypt_with_ad(b'', enc_response_req_bytes)
+            response_request = request.from_bytes_packed(response_req_bytes)
 
+            if response_request.requestType == 'response':
+                h = hmac.HMAC(key, hashes.BLAKE2s(32))
+                h.update(challenge.to_bytes(64))
+                try:
+                    h.verify(response_request.nonceSolution)
+                    print("Verified!!!!")
+                    success_reply = generate_request(requestType='status', status=True, statusCode=200)
+                    enc_success_reply = server_cipherstates[1].encrypt_with_ad(b'', success_reply.to_bytes_packed())
+                    conn.sendall(enc_success_reply)
+                except InvalidSignature:
+                    error_reply = generate_request(requestType='status', status=True, statusCode=401)
+                    enc_error_reply = server_cipherstates[1].encrypt_with_ad(b'', error_reply.to_bytes_packed())
+                    conn.sendall(enc_error_reply)
+                    conn.shutdown()
+                    conn.close()
+            else:
+                error_reply = generate_request(requestType='status', status=True, statusCode=400)
+                enc_error_reply = server_cipherstates[1].encrypt_with_ad(b'', error_reply.to_bytes_packed())
+                conn.sendall(enc_error_reply)
+                conn.shutdown()
+                conn.close()
 if __name__ == "__main__":
     main()
