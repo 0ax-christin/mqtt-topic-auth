@@ -7,6 +7,9 @@ struct Ticket {
     # The devices specific authentication topic where reauthentication takes place
     mqttUsername @2 :Text;
     # The devices username by which it can publish data
-    signature @3 :Data;
-    # Authentication ticket signed with private key of server
+}
+
+struct SignedTicket {
+    ticket @0 :Ticket;
+    signature @1 :Data;
 }
