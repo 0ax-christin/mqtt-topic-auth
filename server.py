@@ -9,6 +9,8 @@ from dissononce.dh.x25519.x25519 import X25519DH
 from dissononce.hash.blake2s import Blake2sHash
 from dissononce.extras.processing.handshakestate_guarded import GuardedHandshakeState
 
+from keygen.generate_keys import generate_ED25519_keypair
+
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 from cryptography.hazmat.primitives import hashes, hmac
 from cryptography.exceptions import InvalidSignature
@@ -17,6 +19,9 @@ from authentication.challenges import generate_challenge
 from authentication.challenges import send_challenge
 
 from capnp_processing.request import generate_request
+
+from capnp_processing.ticket import generate_ticket_id, generate_mqtt_password, generate_mqtt_topic, generate_mqtt_username, generate_signed_ticket
+import mqtt.dynsec_mqtt as dyns
 
 capnp.remove_import_hook()
 request_capnp = capnp.load('capnp_schemas/request.capnp')
@@ -63,6 +68,11 @@ def main():
 
     server_handshakestate.initialize(XXHandshakePattern(), False, b'', s=server_static)
     
+    # Generate identity keypair outside noise handshake
+    private_bytes, public_bytes = generate_ED25519_keypair(isBytes=True, server=True)
+
+    private_key = Ed25519PrivateKey.from_private_bytes(private_bytes)
+
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.bind((HOST, PORT))
         s.listen()
@@ -164,5 +174,38 @@ def main():
                 conn.sendall(enc_error_reply)
                 conn.shutdown()
                 conn.close()
+            
+            ## Sending back a successful authentication and registration ticket
+            ticket_id = generate_ticket_id()
+            ## Generate mqtt topic by taking clients public key and shared nonce solving key as inputs
+            mqtt_topic = "auth/" + generate_mqtt_topic(public_bytes=public_bytes, key=key)
+            mqtt_username = generate_mqtt_username(public_bytes=public_bytes)
+            mqtt_password = generate_mqtt_password(key=key)
+
+            signed_ticket = generate_signed_ticket(private_key=private_key, ticket_id=ticket_id, mqtt_topic=mqtt_topic, mqtt_username=mqtt_username)
+            enc_signed_ticket_bytes = server_cipherstates[1].encrypt_with_ad(b'', signed_ticket.to_bytes_packed())
+
+            conn.sendall(enc_signed_ticket_bytes)
+
+            ## Setting up Dynamic Security 
+            dyns.create_client(mqtt_username)
+            dyns.set_client_password(mqtt_username, mqtt_password)
+
+            mqtt_acl = f"{mqtt_username}-acl"
+            mqtt_group = f"{mqtt_username}-group"
+
+            dyns.create_role(mqtt_acl)
+            dyns.create_group(mqtt_group)
+            dyns.add_group_role(mqtt_group, mqtt_acl, "1")
+            dyns.add_group_client(mqtt_group, mqtt_username, "1")
+            dyns.add_group_client(mqtt_group, "admin", "1")
+
+            dyns.add_role_acl(mqtt_acl, "publishClientSend", mqtt_topic, "allow", "1")
+            dyns.add_role_acl(mqtt_acl, "publishClientReceive", mqtt_topic, "allow", "1")
+            dyns.add_role_acl(mqtt_acl, "subscribeLiteral", mqtt_topic, "allow", "1")
+            dyns.add_role_acl(mqtt_acl, "unsubscribeLiteral", mqtt_topic, "allow", "1")
+
+
+
 if __name__ == "__main__":
     main()

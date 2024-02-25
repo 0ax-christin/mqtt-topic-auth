@@ -20,12 +20,16 @@ from capnp_processing.request import generate_request
 
 from cryptography.hazmat.primitives import hashes, hmac
 
+from capnp_processing.ticket import generate_ticket_id, generate_mqtt_password, generate_mqtt_topic, generate_mqtt_username, generate_signed_ticket
+
+
 HOST = "127.0.0.1"
 PORT = 63000 
 
 def main():
     request = request_capnp.Request
     ticket = ticket_capnp.Ticket
+    signed_ticket = ticket_capnp.SignedTicket
 
     dissononce.logger.setLevel(logging.DEBUG)
 
@@ -144,7 +148,16 @@ def main():
                 # Server does other operations: authentication topic gen
                 # MQTT username pass gen
                 # Gen ticket ID
-            
+                enc_signed_ticket_bytes = s.recv(1500)
+                signed_ticket_bytes = client_cipherstates[1].decrypt_with_ad(b'', enc_signed_ticket_bytes)
+                ticket_signed = signed_ticket.from_bytes_packed(signed_ticket_bytes)
+
+                mqtt_password = generate_mqtt_password(key=key)
+                mqtt_username = ticket_signed.ticket.mqttUsername
+                mqtt_topic = ticket_signed.ticket.mqttTopic
+                ticket_id = ticket_signed.ticket.ticket_id
+
+                
         else:
             conn.shutown()
             conn.close()
