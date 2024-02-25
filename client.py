@@ -15,20 +15,24 @@ from dissononce.extras.processing.handshakestate_guarded import GuardedHandshake
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
+from keygen.generate_keys import generate_ED25519_keypair
+
 HOST = "127.0.0.1"
 PORT = 63000 
 
 def main():
-    
-
     dissononce.logger.setLevel(logging.DEBUG)
 
-    # Generate the long term static DH keypair
-    client_static = X25519DH().generate_keypair()
+    if os.path.exists('keys/client/client_static_keypair.pickle'):
+        with open('keys/client/client_static_keypair.pickle', 'rb') as keypair_file:
+            client_static = pickle.load(keypair_file)
+    else:
+        # Generate the long term static DH keypair
+        client_static = X25519DH().generate_keypair()
     
-    # Serializing longterm static keypair
-    with open('client_static_keypair.pickle', 'wb') as f:
-        pickle.dump(client_static, f)
+        # Serializing longterm static keypair
+        with open('client_static_keypair.pickle', 'wb') as keypair_file:
+            pickle.dump(client_static, keypair_file)
 
     client_handshakestate = HandshakeState(
             SymmetricState(
@@ -43,10 +47,7 @@ def main():
 
     client_handshakestate.initialize(XXHandshakePattern(), True, b'', s=client_static)
 
-    with open('public_key.txt', 'rb') as reader:
-        public_bytes = reader.read()
-    with open('private_key.txt', 'rb') as reader:
-        private_bytes = reader.read()
+    private_bytes, public_bytes = generate_ED25519_keypair(isBytes=True)
 
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.connect((HOST, PORT))
@@ -88,7 +89,7 @@ def main():
             s.sendall(message_buffer)
             
             # Save derived cipherstate so it can be used later
-            with open('client_cipherstates.pickle', 'wb') as f:
+            with open('keys/shared/client_cipherstates.pickle', 'wb') as f:
                 pickle.dump(client_cipherstates, f)
             
             ## REGISTRATION PHASE ##

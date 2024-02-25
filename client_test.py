@@ -16,12 +16,12 @@ def main():
         s.connect((HOST, PORT))
 
         ## assume noise handshake established
-        if not os.path.exists('hmac_key.txt'):
+        if not os.path.exists('keys/shared/hmac_key.txt'):
             key = conn.recv(128)
-            with open('hmac_key.txt', 'wb') as writer:
+            with open('keys/shared/hmac_key.txt', 'wb') as writer:
                 writer.write(key)
         else:
-            with open('hmac_key.txt', 'rb') as reader:
+            with open('keys/shared/hmac_key.txt', 'rb') as reader:
                 key = reader.read()
 
         ## REGISTRATION PHASE ##
