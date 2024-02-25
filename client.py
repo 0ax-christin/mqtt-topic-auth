@@ -1,4 +1,4 @@
-import dissononce, logging, socket, pickle, capnp
+import dissononce, logging, socket, pickle, capnp, os
 
 capnp.remove_import_hook()
 request_capnp = capnp.load('capnp_schemas/request.capnp')
@@ -17,10 +17,12 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from keygen.generate_keys import generate_ED25519_keypair
 
+
 HOST = "127.0.0.1"
 PORT = 63000 
 
 def main():
+    request = request_capnp.Request
     dissononce.logger.setLevel(logging.DEBUG)
 
     if os.path.exists('keys/client/client_static_keypair.pickle'):
@@ -31,7 +33,7 @@ def main():
         client_static = X25519DH().generate_keypair()
     
         # Serializing longterm static keypair
-        with open('client_static_keypair.pickle', 'wb') as keypair_file:
+        with open('keys/client/client_static_keypair.pickle', 'wb') as keypair_file:
             pickle.dump(client_static, keypair_file)
 
     client_handshakestate = HandshakeState(
@@ -43,7 +45,6 @@ def main():
             ),
             X25519DH()
         )
-
 
     client_handshakestate.initialize(XXHandshakePattern(), True, b'', s=client_static)
 
@@ -63,10 +64,8 @@ def main():
         s.sendall(signed_random_bits)
 
         # Receive back the result, which indicates whether authentication passed or failed
-        result = s.recv(1024)
-        print(result)
-
-        if result == b'SUCCESS':
+        result_reply = request.from_bytes_packed(s.recv(1024))
+        if result_reply.statusCode == 200:
             # -> e
             message_buffer = bytearray()
             client_handshakestate.write_message(b'', message_buffer)
@@ -92,18 +91,11 @@ def main():
             with open('keys/shared/client_cipherstates.pickle', 'wb') as f:
                 pickle.dump(client_cipherstates, f)
             
-            ## REGISTRATION PHASE ##
-            request = request_capnp.Request
-            ticket = ticket_capnp.Ticket
-
-            # Sending first register request
-            register_request = request.new_message(noNonce=None, requestType='register').to_bytes()
-            s.sendall(register_request)
-            
             #Access one of the cipher states containing the key and encrypt
             ciphertext = client_cipherstates[0].encrypt_with_ad(b'', b'Hello')
             s.sendall(ciphertext) 
         else:
+            conn.shutown()
             conn.close()
 
 if __name__ == "__main__":

@@ -1,4 +1,4 @@
-import dissononce, logging, socket, os, secrets, pickle
+import dissononce, logging, socket, os, secrets, pickle, capnp
 
 from dissononce.processing.impl.handshakestate import HandshakeState
 from dissononce.processing.impl.symmetricstate import SymmetricState
@@ -11,6 +11,15 @@ from dissononce.extras.processing.handshakestate_guarded import GuardedHandshake
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 from cryptography.exceptions import InvalidSignature
+
+from authentication.challenges import generate_challenge
+from authentication.challenges import send_challenge
+
+from capnp_processing.request import generate_request
+
+capnp.remove_import_hook()
+request_capnp = capnp.load('capnp_schemas/request.capnp')
+ticket_capnp = capnp.load('capnp_schemas/ticket.capnp')
 
 HOST = "127.0.0.1"
 PORT = 63000
@@ -27,14 +36,18 @@ def public_key_exists(public_bytes):
                     return False
 def main():
     dissononce.logger.setLevel(logging.DEBUG)
-    
-    # Do not generate long term pair if it already exists
-    # Generate the long term static DH keypair
-    server_static = X25519DH().generate_keypair()
 
-    # Serializing longterm static keypair
-    with open('server_static_keypair.pickle', 'wb') as f:
-        pickle.dump(server_static, f)
+
+    if os.path.exists('keys/server/server_static_keypair.pickle'):
+        with open('keys/server/server_static_keypair.pickle', 'rb') as keypair_file:
+            server_static = pickle.load(keypair_file)
+    else:
+        # Generate the long term static DH keypair
+        server_static = X25519DH().generate_keypair()
+    
+        # Serializing longterm static keypair
+        with open('keys/server/server_static_keypair.pickle', 'wb') as keypair_file:
+            pickle.dump(server_static, keypair_file)
 
     server_handshakestate = HandshakeState(
             SymmetricState(
@@ -66,12 +79,16 @@ def main():
                 try:
                     verify_result = public_key.verify(signed_random_bits, random_bits)
                 except InvalidSignature:
-                    conn.sendall(b'INVALID SIGNATURE, AUTH FAILED')
+                    # 401 for unauthorized, authentication failed
+                    error_reply = generate_request(requestType='status', status=True, statusCode=401)
+                    conn.sendall(error_reply.to_bytes_packed())
+                    conn.shutdown()
                     conn.close()
                     exit()
                 # If no exception has been raised, means that signature was correctly verified
                 if verify_result == None:
-                    conn.sendall(b'SUCCESS')
+                    success_reply = generate_request(requestType='status', status=True, statusCode=200)
+                    conn.sendall(success_reply.to_bytes_packed())
             
             # Receiving ephemeral public key from client
             message_buffer = conn.recv(1024)
@@ -90,26 +107,14 @@ def main():
             message_buffer = conn.recv(1024)
             server_cipherstates = server_handshakestate.read_message(bytes(message_buffer), bytearray())
             
-
-            with open('server_cipherstates.pickle', 'wb') as f:
-                pickle.dump(client_cipherstates, f)
+            with open('keys/shared/server_cipherstates.pickle', 'wb') as f:
+                pickle.dump(server_cipherstates, f)
             
-            ## REGISTRATION PHASE ##
-            request = request_capnp.Request
-            ticket = ticket_capnp.Ticket
-
-            register_bytes = s.recv(64)
-            register_request = request.from_bytes(register_bytes)
-            #if register_request.requestType == 'register':
-
             ciphertext = conn.recv(1024)
             plaintext = server_cipherstates[0].decrypt_with_ad(b'', ciphertext)
             print(plaintext)
             assert plaintext == b'Hello'
 
-            #conn.sendall(data)
-
-            
 
 if __name__ == "__main__":
     main()
