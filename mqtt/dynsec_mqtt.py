@@ -44,3 +44,34 @@ def add_group_client(group_name, username, priority):
 def set_client_password(username, password):
     set_password_result = subprocess.run(mosquitto_base_cmd + ["setClientPassword", username, password])
     return set_password_result
+
+# Disable Client of given username if they fail to solve the nonce
+def disable_client(username):
+    disable_client_result = subprocess.run(mosquitto_base_cmd + ["disableClient", username])
+    return disable_client_result
+
+# Remove a client of given username if they fail to solve the nonce
+def remove_group_client(group_name, username):
+    remove_group_client_result = subprocess.run(mosquitto_base_cmd + ["removeGroupClient", group_name, username])
+
+# For a given username of a client and a given mqtt topic for the purposes of authentication
+# denoted by "auth-*", create a group and role relating to the mqtt username
+# To the group, add as member only the admin and the given client
+# Add the 4 ACLs to the role relating to publishing, subscribing and unsubscribing to the given auth topic
+# Add this role to the group
+# As the admin and client are members of the group, the ACLs apply to them for the given auth topic, allowing only these
+# two parties to publish and subscribe
+def set_dynsec_topic(mqtt_username, mqtt_topic):
+    mqtt_acl = f"{mqtt_username}-acl"
+    mqtt_group = f"{mqtt_username}-group"
+
+    dyns.create_role(mqtt_acl)
+    dyns.create_group(mqtt_group)
+    dyns.add_group_role(mqtt_group, mqtt_acl, "1")
+    dyns.add_group_client(mqtt_group, mqtt_username, "1")
+    dyns.add_group_client(mqtt_group, "admin", "1")
+
+    dyns.add_role_acl(mqtt_acl, "publishClientSend", mqtt_topic, "allow", "1")
+    dyns.add_role_acl(mqtt_acl, "publishClientReceive", mqtt_topic, "allow", "1")
+    dyns.add_role_acl(mqtt_acl, "subscribeLiteral", mqtt_topic, "allow", "1")
+    dyns.add_role_acl(mqtt_acl, "unsubscribeLiteral", mqtt_topic, "allow", "1")
