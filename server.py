@@ -15,12 +15,12 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 from cryptography.hazmat.primitives import hashes, hmac
 from cryptography.exceptions import InvalidSignature
 
-from authentication.challenges import generate_challenge
-from authentication.challenges import send_challenge
+from authentication.challenges import verify_challenge_response
 
-from capnp_processing.request import generate_request
+from capnp_processing.request import generate_request_bytes
 
 from capnp_processing.ticket import generate_ticket_id, generate_mqtt_password, generate_mqtt_topic, generate_mqtt_username, generate_signed_ticket
+
 import mqtt.dynsec_mqtt as dyns
 
 capnp.remove_import_hook()
@@ -68,7 +68,7 @@ def main():
 
     server_handshakestate.initialize(XXHandshakePattern(), False, b'', s=server_static)
     
-    # Generate identity keypair outside noise handshake
+    # Generate identity keypair outside noise handshake, which is stored in a file
     private_bytes, public_bytes = generate_ED25519_keypair(isBytes=True, server=True)
 
     private_key = Ed25519PrivateKey.from_private_bytes(private_bytes)
@@ -79,29 +79,48 @@ def main():
         conn, addr = s.accept()
         with conn:
             print(f"Connected by {addr}")
+
+            # 1. Client expects the public key of the server
+            conn.sendall(public_bytes)
+
+            # 2. Expect to receive random bytes as challenge
+            random_bits = conn.recv(32)
+            # 3. Sign and send random bits with servers private key
+            signed_random_bits = private_key.sign(random_bits)
+            conn.sendall(signed_random_bits)
+            # if the server has been verified, the flow continues, else client shutdowns the socket
+            # Check the result reply of the client to see whether statusCode is 200, for success, else shutdown this connection
+            result_reply = request.from_bytes_packed(conn.recv(1024))
+
+            if result_reply.statusCode != 200:
+                conn.shutdown()
+                conn.close()
+                exit()
+
             # First, a public key is expected from client
-            public_bytes = conn.recv(32)
+            client_public_bytes = conn.recv(32)
         
-            if public_key_exists(public_bytes=public_bytes):
-                public_key = Ed25519PublicKey.from_public_bytes(public_bytes)
+            if public_key_exists(public_bytes=client_public_bytes):
+                client_public_key = Ed25519PublicKey.from_public_bytes(client_public_bytes)
                 # If public key exists in authorized_keys, send random 32 bytes back as a challenge to sign
                 random_bits = secrets.token_bytes(32)
                 conn.sendall(random_bits)
                 signed_random_bits = conn.recv(64)
                 try:
-                    verify_result = public_key.verify(signed_random_bits, random_bits)
+                    verify_result = client_public_key.verify(signed_random_bits, random_bits)
                 except InvalidSignature:
                     # 401 for unauthorized, authentication failed
-                    error_reply = generate_request(requestType='status', status=True, statusCode=401)
-                    conn.sendall(error_reply.to_bytes_packed())
+                    error_reply = generate_request_bytes(requestType='status', status=True, statusCode=401)
+                    conn.sendall(error_reply)
                     conn.shutdown()
                     conn.close()
                     exit()
                 # If no exception has been raised, means that signature was correctly verified
                 if verify_result == None:
-                    success_reply = generate_request(requestType='status', status=True, statusCode=200)
-                    conn.sendall(success_reply.to_bytes_packed())
-            
+                    success_reply = generate_request_bytes(requestType='status', status=True, statusCode=200)
+                    conn.sendall(success_reply)
+            #TODO: potentially add error requests and types to challenge process? else:
+    
             # Receiving ephemeral public key from client
             message_buffer = conn.recv(1024)
             
@@ -117,14 +136,17 @@ def main():
 
             # -> s, se
             message_buffer = conn.recv(1024)
-            server_cipherstates = server_handshakestate.read_message(bytes(message_buffer), bytearray())
-            
+            shared_cipherstates = server_handshakestate.read_message(bytes(message_buffer), bytearray())
+            client_cipherstate = shared_cipherstates[0]
+            server_cipherstate = shared_cipherstates[1]
+
             with open('keys/shared/server_cipherstates.pickle', 'wb') as f:
-                pickle.dump(server_cipherstates, f)
+                pickle.dump(shared_cipherstates, f)
             
             # Every request after this is under encryption of the noise handshake
 
             # Load shared HMAC Keys if present, else send a newly generated 128 bit key to be used as HMAC
+            # Send hmac key after noise established
             if os.path.exists('keys/shared/hmac_key.txt'):
                 with open('keys/shared/hmac_key.txt', 'rb') as reader:
                     key = reader.read()
@@ -132,17 +154,16 @@ def main():
                 key = secrets.randbits(128).to_bytes(128)
                 with open('keys/shared/hmac_key.txt', 'wb') as writer:
                     writer.write(key)
-                enc_key = server_cipherstates[1].encrypt_with_ad(b'', key)
+                enc_key = server_cipherstate.encrypt_with_ad(b'', key)
                 conn.sendall(enc_key)
 
             enc_register_req_bytes = conn.recv(1028)
-            register_req_bytes = server_cipherstates[0].decrypt_with_ad(b'', enc_register_req_bytes)
+            register_req_bytes = client_cipherstate.decrypt_with_ad(b'', enc_register_req_bytes)
             register_request = request.from_bytes_packed(register_req_bytes)
             
             if register_request.requestType == 'register':
-                challenge = generate_challenge()
-                challenge_request = generate_request(requestType='challenge',  nonce=challenge.to_bytes(64), solution=False)
-                enc_challenge_request = server_cipherstates[1].encrypt_with_ad(b'', challenge_request.to_bytes_packed())
+                challenge = secrets.token_bytes(64)
+                enc_challenge_request = generate_request_bytes(requestType='challenge', cipherState=server_cipherstate, nonce=challenge, solution=False)
                 conn.sendall(enc_challenge_request)
             else:
                 conn.shutdown()
@@ -150,27 +171,21 @@ def main():
             
             # Receive the clients solved response
             enc_response_req_bytes = conn.recv(1028)
-            response_req_bytes = server_cipherstates[0].decrypt_with_ad(b'', enc_response_req_bytes)
+            response_req_bytes = client_cipherstate.decrypt_with_ad(b'', enc_response_req_bytes)
             response_request = request.from_bytes_packed(response_req_bytes)
 
             if response_request.requestType == 'response':
-                h = hmac.HMAC(key, hashes.BLAKE2s(32))
-                h.update(challenge.to_bytes(64))
-                try:
-                    h.verify(response_request.nonceSolution)
-                    print("Verified!!!!")
-                    success_reply = generate_request(requestType='status', status=True, statusCode=200)
-                    enc_success_reply = server_cipherstates[1].encrypt_with_ad(b'', success_reply.to_bytes_packed())
+                result = verify_challenge_response(nonce_challenge=challenge, nonce_solution=response_request.nonceSolution, hmac_key=key)
+                if result == True:
+                    enc_success_reply = generate_request_bytes(requestType='status', cipherState=server_cipherstate, status=True, statusCode=200)
                     conn.sendall(enc_success_reply)
-                except InvalidSignature:
-                    error_reply = generate_request(requestType='status', status=True, statusCode=401)
-                    enc_error_reply = server_cipherstates[1].encrypt_with_ad(b'', error_reply.to_bytes_packed())
+                else:
+                    enc_error_reply = generate_request_bytes(requestType='status', cipherState=server_cipherstate, status=True, statusCode=401)
                     conn.sendall(enc_error_reply)
                     conn.shutdown()
                     conn.close()
             else:
-                error_reply = generate_request(requestType='status', status=True, statusCode=400)
-                enc_error_reply = server_cipherstates[1].encrypt_with_ad(b'', error_reply.to_bytes_packed())
+                enc_error_reply = generate_request_bytes(requestType='status', cipherState=server_cipherstate, status=True, statusCode=400)
                 conn.sendall(enc_error_reply)
                 conn.shutdown()
                 conn.close()
@@ -183,28 +198,19 @@ def main():
             mqtt_password = generate_mqtt_password(key=key)
 
             signed_ticket = generate_signed_ticket(private_key=private_key, ticket_id=ticket_id, mqtt_topic=mqtt_topic, mqtt_username=mqtt_username)
-            enc_signed_ticket_bytes = server_cipherstates[1].encrypt_with_ad(b'', signed_ticket.to_bytes_packed())
+            enc_signed_ticket_bytes = server_cipherstate.encrypt_with_ad(b'', signed_ticket.to_bytes_packed())
 
             conn.sendall(enc_signed_ticket_bytes)
 
             ## Setting up Dynamic Security 
+            # After registration and nonce authentication, create on the broker an account with the generated 
+            # mqtt username and password
             dyns.create_client(mqtt_username)
             dyns.set_client_password(mqtt_username, mqtt_password)
 
-            mqtt_acl = f"{mqtt_username}-acl"
-            mqtt_group = f"{mqtt_username}-group"
+            dyns.set_dynsec_topic(mqtt_username, mqtt_topic)
 
-            dyns.create_role(mqtt_acl)
-            dyns.create_group(mqtt_group)
-            dyns.add_group_role(mqtt_group, mqtt_acl, "1")
-            dyns.add_group_client(mqtt_group, mqtt_username, "1")
-            dyns.add_group_client(mqtt_group, "admin", "1")
-
-            dyns.add_role_acl(mqtt_acl, "publishClientSend", mqtt_topic, "allow", "1")
-            dyns.add_role_acl(mqtt_acl, "publishClientReceive", mqtt_topic, "allow", "1")
-            dyns.add_role_acl(mqtt_acl, "subscribeLiteral", mqtt_topic, "allow", "1")
-            dyns.add_role_acl(mqtt_acl, "unsubscribeLiteral", mqtt_topic, "allow", "1")
-
+            # Sending
 
 
 if __name__ == "__main__":
