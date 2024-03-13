@@ -1,0 +1,27 @@
+@startuml public_key_auth
+title Mutual Authentication of Server & Client
+IIoT_Device -> Server : {register, challenge}
+Server -> Server: sign nonceChallenge
+IIoT_Device <-- Server: {response, signedSolution}
+IIoT_Device <- IIoT_Device: verify signature
+alt invalid signature
+  IIoT_Device -> Server: {status, 401}
+  IIoT_Device -> Server: TCP FIN, RST
+end
+IIoT_Device -> Server: {PUB_iot}
+Server -> Server: in authorized_keys?
+alt public key not in authorized_keys
+  IIoT_Device <-- Server: {status, 403}
+  IIoT_Device <-- Server: TCP FIN, RST
+end
+IIoT_Device <-- Server: {challenge, challenge}
+IIoT_Device <- IIoT_Device: Sign challenge
+IIoT_Device -> Server: {response, signedSolution}
+Server -> Server: verify signature
+alt valid signature
+  IIoT_Device <-- Server: {status, 200}
+else invalid signature
+  IIoT_Device <-- Server: {status, 401}
+  IIoT_Device <-- Server: TCP FIN, RST
+end
+@enduml
