@@ -1,0 +1,29 @@
+@startuml
+title Issuing of Token, Generation of Ticket
+participant IIoT_Device
+box "Edge Server"
+participant Edge_Server
+participant MQTT_Broker
+end box
+box 
+participant Smart_Contract
+participant Blockchain
+end box
+
+Edge_Server -> Edge_Server: Generate TicketId
+Edge_Server -> Edge_Server: mqttTopic = SHA3-256(public_key_client,HMAC_key)
+Edge_Server -> Edge_Server: mqttUsername = public_key_client
+Edge_Server -> Edge_Server: mqttPassword = HMAC_key
+note right of Edge_Server: Token: \n TicketId \n mqttTopic \n mqttUsername \n HMAC_key
+Edge_Server -> Edge_Server: Sign token with edge server private key
+note right of Edge_Server: Signed_Token: \n Token \n Signature
+IIoT_Device <-- Edge_Server: Signed_Token
+Edge_Server -> MQTT_Broker: createClient(mqttUsername, mqttPassword)
+Edge_Server -> MQTT_Broker: set dynamic ACL permissions for auth topic
+
+
+Edge_Server -> Edge_Server: generate Ticket with expiry 1hr and Nonce null
+note left of Edge_Server: Ticket \n TicketID \n deviceID \n Expiry \n Nonce \n Signature
+Edge_Server -> Smart_Contract: Ticket
+Smart_Contract -> Blockchain: Store Ticket
+@enduml

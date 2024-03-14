@@ -1,0 +1,54 @@
+@startuml
+
+title Noise_XX_25519_BLAKE2s_ChaChaPoly1305 Handshake
+IIoT_Device <- IIoT_Device: **generate X25519 static DH keypair**
+note left of IIoT_Device: <b>Handshake State:</b> \n s=keypair e=0 re=0 s=0 rs=0
+Server -> Server: **generate X25519 static DH keypair**
+note right of Server: <b>Handshake State:</b> \n s=keypair e=0 re=0 s=0 rs=0
+IIoT_Device <- IIoT_Device: **mixHash(Noise_XX_25519_BLAKE2s_ChaChaPoly1305)**
+note left of IIoT_Device: <b>Symmetric State:</b> \n h=mixHash() ck=h
+Server -> Server: **mixHash(Noise_XX_25519_BLAKE2s_ChaChaPoly1305)**
+note right of Server: <b>Symmetric State:</b> \n h=mixHash() ck=h
+IIoT_Device <- IIoT_Device: **generate ephemeral keypair**
+note left of IIoT_Device: <b>Handshake State:</b> \n s=<set> e=<set> re=0 s=0 rs=0
+
+note over IIoT_Device, Server: **-> e**
+IIoT_Device -> Server: **ePUBc**
+note right of Server: <b>Handshake State:</b> \n s=<set> e=0 re=ePUBc s=0 rs=0
+IIoT_Device <- IIoT_Device: **h = mixHash(h, ePUBc)**
+Server -> Server: **h = mixHash(h, ePUBc)**
+
+note over IIoT_Device, Server: **<- e**
+Server -> Server: **generate ephemeral keypair**
+note right of Server: <b>Handshake State:</b> \n s=<set> e=<set> re=ePUBc s=0 rs=0
+IIoT_Device <-- Server: **ePUBs**
+note left of IIoT_Device: <b>Handshake State:</b> \n s=<set> e=<set> re=ePUBs s=0 rs=0
+IIoT_Device <- IIoT_Device: **h = mixHash(h, ePUBs)**
+Server -> Server: **h = mixHash(h, ePUBs)**
+
+note over IIoT_Device, Server: **<- e, ee** 
+IIoT_Device <- IIoT_Device: **ck, k = mixKey(HKDF(ck, DH(e, re)))**
+Server -> Server: **ck, k = mixKey(HKDF(ck, DH(e, re)))**
+
+note over IIoT_Device, Server: **<- e, ee, s**
+IIoT_Device <-- Server: **sPUBs**
+note left of IIoT_Device: <b>Handshake State:</b> \n s=<set> e=<set> re=ePUBs s=0 rs=sPUBs
+IIoT_Device <- IIoT_Device: **h = encryptAndHash(prev_hash, sPUBs)**
+Server -> Server: **h = encryptAndHash(h, sPUBs)**
+
+note over IIoT_Device, Server: **<- e, ee, s, es**
+IIoT_Device <- IIoT_Device: **ck, k = mixKey(HKDF(ck, DH(e, rs)))**
+Server -> Server: **ck, k = mixKey(HKDF(ck, DH(re, s)))**
+
+note over IIoT_Device, Server: **s ->**
+IIoT_Device -> Server: **sPUBc**
+note right of Server: <b>Handshake State:</b> \n s=<set> e=<set> re=ePUBc s=0 rs=sPUBc
+IIoT_Device <- IIoT_Device: **h = encryptAndHash(h, sPUBc)**
+Server -> Server: **h = encryptAndHash(h, sPUBc)**
+
+note over IIoT_Device, Server: **s, se ->**
+IIoT_Device <- IIoT_Device: **ck, k = mixKey(HKDF(ck, DH(s, re)))**
+Server -> Server: **ck, k = mixKey(HKDF(ck, DH(e, rs)))**
+
+note over IIoT_Device, Server: <b>Final Cipher State:</b> \n k1, k2 = HKDF(ck)
+@enduml

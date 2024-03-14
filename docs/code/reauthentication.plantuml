@@ -1,0 +1,28 @@
+@startuml
+title Reauthentication under topic: auth/SHA3-256(public_key+hmac_key) \n encrypted under ChaChaPoly1305
+
+participant IIoT_Device
+participant Edge_MQTT_Server
+participant Smart_Contract
+
+Edge_MQTT_Server <--- Smart_Contract: Upon Ticket Expiry for DeviceID
+Edge_MQTT_Server -> Edge_MQTT_Server: generate nonceChallenge
+
+IIoT_Device <-- Edge_MQTT_Server: PUBLISH {reauth, nonceChallenge}
+IIoT_Device <- IIoT_Device: SUBSCRIBE auth_topic
+IIoT_Device <- IIoT_Device: response = HMAC(nonceChallenge, hmac_key)
+IIoT_Device -> Edge_MQTT_Server: PUBLISH {response, nonceSolution}
+Edge_MQTT_Server -> Edge_MQTT_Server: SUBSCRIBE auth_topic
+Edge_MQTT_Server -> Edge_MQTT_Server: Verify HMAC(original_challenge, nonceSolution, hmac_key)
+alt nonceSolution is correct
+  IIoT_Device <-- Edge_MQTT_Server: PUBLISH {status, 200}
+  Edge_MQTT_Server -> Smart_Contract: Generate New Ticket
+else nonceSolution is wrong
+  IIoT_Device <-- Edge_MQTT_Server: PUBLISH {status, 401}
+  Edge_MQTT_Server -> Edge_MQTT_Server: Block access of MQTT device account
+else requestType is not response
+  IIoT_Device <-- Edge_MQTT_Server: PUBLISH {status, 400}
+  Edge_MQTT_Server -> Edge_MQTT_Server: Restart Reauthentication flow
+end
+IIoT_Device <- IIoT_Device: SUBSCRIBE auth_topic
+@enduml
