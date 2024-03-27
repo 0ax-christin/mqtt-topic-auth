@@ -81,17 +81,17 @@ def main():
         with conn:
             print(f"Connected by {addr}")
 
-            # 1. Client expects the public key of the server
-            conn.sendall(public_bytes)
-
-            # 2. Expect to receive random bytes as challenge
-            random_bits = conn.recv(32)
-            # 3. Sign and send random bits with servers private key
-            signed_random_bits = private_key.sign(random_bits)
-            conn.sendall(signed_random_bits)
+            # 1. Server expects from the client a register request, with a challenge
+            # This challenge is for the server to sign and authenticate itself
+            client_challenge_req = request.from_bytes_packed(conn.recv(45))
+            client_challenge = client_challenge_req.nonceChallenge
+            signed_client_response = private_key.sign(client_challenge)
+            # 2. Server sends challenge response 
+            signed_challenge_response = generate_request_bytes(requestType="response", nonce=signed_client_response, solution=True) 
+            conn.sendall(signed_challenge_response)
             # if the server has been verified, the flow continues, else client shutdowns the socket
             # Check the result reply of the client to see whether statusCode is 200, for success, else shutdown this connection
-            result_reply = request.from_bytes_packed(conn.recv(1024))
+            result_reply = request.from_bytes_packed(conn.recv(20))
 
             if result_reply.statusCode != 200:
                 conn.shutdown()
@@ -105,10 +105,19 @@ def main():
                 client_public_key = Ed25519PublicKey.from_public_bytes(client_public_bytes)
                 # If public key exists in authorized_keys, send random 32 bytes back as a challenge to sign
                 random_bits = secrets.token_bytes(32)
-                conn.sendall(random_bits)
-                signed_random_bits = conn.recv(64)
+                server_challenge = generate_request_bytes(requestType="challenge", nonce=random_bits)
+                conn.sendall(server_challenge)
+
+                # Getting the signed response from the client
+                signed_client_response = request.from_bytes_packed(conn.recv(80))
+                signed_random_bits = signed_client_response.nonceSolution
+                
                 try:
                     verify_result = client_public_key.verify(signed_random_bits, random_bits)
+                    # If no exception has been raised, means that signature was correctly verified
+                    if verify_result is None:
+                        success_reply = generate_request_bytes(requestType='status', status=True, statusCode=200)
+                        conn.sendall(success_reply)
                 except InvalidSignature:
                     # 401 for unauthorized, authentication failed
                     error_reply = generate_request_bytes(requestType='status', status=True, statusCode=401)
@@ -116,12 +125,14 @@ def main():
                     conn.shutdown()
                     conn.close()
                     exit()
-                # If no exception has been raised, means that signature was correctly verified
-                if verify_result == None:
-                    success_reply = generate_request_bytes(requestType='status', status=True, statusCode=200)
-                    conn.sendall(success_reply)
-            #TODO: potentially add error requests and types to challenge process? else:
-    
+            else:
+              unauthorized_key_reply = generate_request_bytes(requestType='status', status=True, statusCode=403)
+              conn.sendall(unauthorized_key_reply)
+              conn.shutdown()
+              conn.close()
+              exit()
+              
+                    
             # Receiving ephemeral public key from client
             message_buffer = conn.recv(1024)
             

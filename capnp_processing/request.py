@@ -31,4 +31,5 @@ def generate_request_bytes(requestType: str, cipherState: CipherState = None, as
         enc_new_req_bytes = cipherState.encrypt_with_ad(assoc_data, new_request_bytes)
         return enc_new_req_bytes
     # else raise an Exception
-    return new_request_bytes
+    else:
+        return new_request_bytes

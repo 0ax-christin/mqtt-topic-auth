@@ -1,4 +1,4 @@
-import dissononce, logging, socket, pickle, capnp, os
+import dissononce, logging, secrets, socket, pickle, capnp, os
 
 from dissononce.processing.impl.handshakestate import HandshakeState
 from dissononce.processing.impl.symmetricstate import SymmetricState
@@ -21,6 +21,9 @@ from cryptography.hazmat.primitives import hashes, hmac
 from capnp_processing.ticket import generate_ticket_id, generate_mqtt_password, generate_mqtt_topic, generate_mqtt_username, generate_signed_ticket
 
 from authentication.challenges import verify_challenge_response, generate_challenge_response
+
+from pathlib import Path
+
 capnp.remove_import_hook()
 request_capnp = capnp.load('capnp_schemas/request.capnp')
 ticket_capnp = capnp.load('capnp_schemas/ticket.capnp')
@@ -29,12 +32,22 @@ ticket_capnp = capnp.load('capnp_schemas/ticket.capnp')
 HOST = "127.0.0.1"
 PORT = 63000 
 
+
+# Base path of the project directory
+base_path = Path(__file__).parent
+
 def main():
     request = request_capnp.Request
-    ticket = ticket_capnp.Ticket
     signed_ticket = ticket_capnp.SignedTicket
 
     dissononce.logger.setLevel(logging.DEBUG)
+
+    # All clients have the server public key stored in them
+    if os.path.exists((base_path / f'../keys/server/public_key.txt').resolve()):
+        with open((base_path / f'../keys/server/public_key.txt').resolve(), 'rb') as reader:
+            server_public_bytes = reader.read()
+
+    server_public_key = Ed25519PublicKey.from_public_bytes(server_public_bytes)
 
     if os.path.exists('keys/client/client_static_keypair.pickle'):
         with open('keys/client/client_static_keypair.pickle', 'rb') as keypair_file:
@@ -67,59 +80,41 @@ def main():
         private_key = Ed25519PrivateKey.from_private_bytes(private_bytes)
         
         ## Authenticate server to the client
-        # 1. Receive public key from server
-        recv_server_public_bytes = s.recv(32)
-        # 2. verify that it is the public key, IoT client expects (beforehand, all IoT devices know the edge servers public key)
-        if os.path.exists('keys/server/server_public_key.txt'):
-            with open('key/server/server_public_key.txt', 'rb') as reader:
-                orig_server_public_bytes = reader.read()
-                server_public_key = Ed25519PublicKey.from_public_bytes(orig_server_public_bytes)
-        # if doesnt exist, exit program with error, close connection
-        else:
-            s.shutdown()
-            s.close()
-            exit()
-        if orig_server_public_bytes == recv_server_public_bytes:
-            server_public_key = Ed25519PublicKey.from_public_bytes(recv_server_public_bytes)
-            # 3. Send a challenge for the server to sign
-            # Generate 32 random bytes
-            random_bits = secrets.token_bytes(32)
-            s.sendall(random_bits)
-            # 4. Receive the solution, verify with public key
-            signed_random_bits = s.recv(64)
-            # 5. If correct, continue communication, else, shutdown connection with error
-            try:
-                verify_result = server_public_key.verify(signed_random_bits, random_bits)
-                # If no exception has been raised, means that signature was correctly verified
-                if verify_result is None:
-                    success_reply_bytes = generate_request_bytes(requestType='status', status=True, statusCode=200)
-                    s.sendall(success_reply_bytes)
-            except InvalidSignature:
-                ## Stop connection if the signature doesnt match
-                error_reply_bytes = generate_request_bytes(requestType='status', status=True, statusCode=401)
-                s.sendall(error_reply_bytes)
-                print("Error: Invalid Signature")
-                s.shutdown()
-                s.close()
-            
-        # if the received public key doesnt match the key inside the IoT device, close connection with error
-        else:
-            # 400 for bad request, wrong public key
+        # 1. Send challenge to the server
+        random_bits = secrets.token_bytes(32)
+        client_challenge = generate_request_bytes(requestType="register", nonce=random_bits)
+        s.sendall(client_challenge)
+
+        # 2. Receive the solution, verify with public key
+        signed_challenge_response = request.from_bytes_packed(s.recv(80))
+        signed_random_bits = signed_challenge_response.nonceSolution
+
+        try:
+            verify_result = server_public_key.verify(signed_random_bits, random_bits)
+            # If no exception has been raised, means that signature was correctly verified
+            if verify_result is None:
+                success_reply_bytes = generate_request_bytes(requestType='status', status=True, statusCode=200)
+                s.sendall(success_reply_bytes)
+        except InvalidSignature:
+            ## Stop connection if the signature doesnt match
             error_reply_bytes = generate_request_bytes(requestType='status', status=True, statusCode=401)
             s.sendall(error_reply_bytes)
+            print("Error: Invalid Signature")
             s.shutdown()
             s.close()
+            
+       # Send the clients public key
+       s.sendall(public_bytes) 
 
-        ## Authenticate client to the server
-        # Send the public key to the server
-        s.sendall(public_bytes)
-        # Receive random challenge bytes to sign
-        random_bits = s.recv(32)
-
-        # Sign and send back signed challenge bytes
-        signed_random_bits = private_key.sign(random_bits)
-        s.sendall(signed_random_bits)
-
+       server_response = request.from_bytes_packed(s.recv(45))
+       if server_response.requestType == "challenge":
+           server_challenge = server_response.nonceChallenge
+           signed_client_response = private_key.sign(server_challenge)
+           signed_client_response = generate_request_bytes(requestType="response", nonce=signed_client_response, solution=True)
+           s.sendall(signed_client_response)
+       else:
+           s.shutdown()
+           s.close()
         # Receive back the result, which indicates whether authentication passed or failed
         result_reply = request.from_bytes_packed(s.recv(1024))
         if result_reply.statusCode == 200:
@@ -192,10 +187,9 @@ def main():
                 enc_signed_ticket_bytes = s.recv(1500)
                 signed_ticket_bytes = server_cipherstate.decrypt_with_ad(b'', enc_signed_ticket_bytes)
                 ticket_signed = signed_ticket.from_bytes_packed(signed_ticket_bytes)
-
                 # Client verifies signed ticket with the servers public key
                 try:
-                    verify_result = server_public_key.verify(ticket_signed.signature)
+                    verify_result = server_public_key.verify(ticket_signed.signature, ticket_signed.ticket)
                     ## Else success reply?
                 except InvalidSignature:
                     ## Error Reply for Bad Signature on Signed Ticket
