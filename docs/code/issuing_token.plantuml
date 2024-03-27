@@ -10,20 +10,21 @@ participant Smart_Contract
 participant Blockchain
 end box
 
-Edge_Server -> Edge_Server: Generate TicketId
+Edge_Server -> Edge_Server: ticketId = uuid.uuid4.hex()
 Edge_Server -> Edge_Server: mqttTopic = SHA3-256(public_key_client,HMAC_key)
-Edge_Server -> Edge_Server: mqttUsername = public_key_client
-Edge_Server -> Edge_Server: mqttPassword = HMAC_key
-note right of Edge_Server: Token: \n TicketId \n mqttTopic \n mqttUsername \n HMAC_key
+Edge_Server -> Edge_Server: mqttUsername = SHA3-256(public_key_client)
+Edge_Server -> Edge_Server: mqttPassword = SHA3-256(HMAC_key)
+Edge_Server -> Edge_Server: seed = secrets.randbits(128)
+note right of Edge_Server: Token: \n TicketId \n mqttTopic \n mqttUsername \n HMAC_key \n seed
 Edge_Server -> Edge_Server: Sign token with edge server private key
 note right of Edge_Server: Signed_Token: \n Token \n Signature
 IIoT_Device <-- Edge_Server: Signed_Token
 Edge_Server -> MQTT_Broker: createClient(mqttUsername, mqttPassword)
-Edge_Server -> MQTT_Broker: set dynamic ACL permissions for auth topic
+Edge_Server -> MQTT_Broker: set PUBLISH, SUBSCRIBE access to auth topic for only \n admin and user
 
 
-Edge_Server -> Edge_Server: generate Ticket with expiry 1hr and Nonce null
-note left of Edge_Server: Ticket \n TicketID \n deviceID \n Expiry \n Nonce \n Signature
+Edge_Server -> Edge_Server: generate Ticket
+note left of Edge_Server: Ticket \n TicketID \n DeviceID \n public_key \n Expiry \n seed \n HMAC_key \n Signature
 Edge_Server -> Smart_Contract: Ticket
 Smart_Contract -> Blockchain: Store Ticket
 @enduml
