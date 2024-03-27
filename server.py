@@ -11,6 +11,7 @@ from dissononce.extras.processing.handshakestate_guarded import GuardedHandshake
 
 from keygen.generate_keys import generate_ED25519_keypair
 
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 from cryptography.hazmat.primitives import hashes, hmac
 from cryptography.exceptions import InvalidSignature
@@ -210,8 +211,8 @@ def main():
 
             dyns.set_dynsec_topic(mqtt_username, mqtt_topic)
 
-            # Sending
-
+            # Generate Ticket to commit to blockchain
+            # 
 
 if __name__ == "__main__":
     main()

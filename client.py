@@ -1,9 +1,5 @@
 import dissononce, logging, socket, pickle, capnp, os
 
-capnp.remove_import_hook()
-request_capnp = capnp.load('capnp_schemas/request.capnp')
-ticket_capnp = capnp.load('capnp_schemas/ticket.capnp')
-
 from dissononce.processing.impl.handshakestate import HandshakeState
 from dissononce.processing.impl.symmetricstate import SymmetricState
 from dissononce.processing.impl.cipherstate import CipherState
@@ -13,7 +9,9 @@ from dissononce.dh.x25519.x25519 import X25519DH
 from dissononce.hash.blake2s import Blake2sHash
 from dissononce.extras.processing.handshakestate_guarded import GuardedHandshakeState
 
+from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
 from keygen.generate_keys import generate_ED25519_keypair
 from capnp_processing.request import generate_request_bytes
@@ -23,6 +21,10 @@ from cryptography.hazmat.primitives import hashes, hmac
 from capnp_processing.ticket import generate_ticket_id, generate_mqtt_password, generate_mqtt_topic, generate_mqtt_username, generate_signed_ticket
 
 from authentication.challenges import verify_challenge_response, generate_challenge_response
+capnp.remove_import_hook()
+request_capnp = capnp.load('capnp_schemas/request.capnp')
+ticket_capnp = capnp.load('capnp_schemas/ticket.capnp')
+
 
 HOST = "127.0.0.1"
 PORT = 63000 
@@ -62,7 +64,6 @@ def main():
 
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.connect((HOST, PORT))
-
         private_key = Ed25519PrivateKey.from_private_bytes(private_bytes)
         
         ## Authenticate server to the client
@@ -85,18 +86,18 @@ def main():
             random_bits = secrets.token_bytes(32)
             s.sendall(random_bits)
             # 4. Receive the solution, verify with public key
-            signed_random_bits = conn.recv(64)
+            signed_random_bits = s.recv(64)
             # 5. If correct, continue communication, else, shutdown connection with error
             try:
                 verify_result = server_public_key.verify(signed_random_bits, random_bits)
                 # If no exception has been raised, means that signature was correctly verified
-                if verify_result == None:
+                if verify_result is None:
                     success_reply_bytes = generate_request_bytes(requestType='status', status=True, statusCode=200)
-                    conn.sendall(success_reply_bytes)
+                    s.sendall(success_reply_bytes)
             except InvalidSignature:
                 ## Stop connection if the signature doesnt match
                 error_reply_bytes = generate_request_bytes(requestType='status', status=True, statusCode=401)
-                conn.sendall(error_reply_bytes)
+                s.sendall(error_reply_bytes)
                 print("Error: Invalid Signature")
                 s.shutdown()
                 s.close()
@@ -105,7 +106,7 @@ def main():
         else:
             # 400 for bad request, wrong public key
             error_reply_bytes = generate_request_bytes(requestType='status', status=True, statusCode=401)
-            conn.sendall(error_reply_bytes)
+            s.sendall(error_reply_bytes)
             s.shutdown()
             s.close()
 
@@ -151,7 +152,7 @@ def main():
 
             # Load the HMAC keys
             if not os.path.exists('keys/shared/hmac_key.txt'):
-                enc_key = conn.recv(180)
+                enc_key = s.recv(180)
                 key = server_cipherstate.decrypt_with_ad(b'', enc_key)
                 with open('keys/shared/hmac_key.txt', 'wb') as writer:
                     writer.write(key)
@@ -199,8 +200,8 @@ def main():
                 except InvalidSignature:
                     ## Error Reply for Bad Signature on Signed Ticket
                     ## Program and socket closes and the values of the ticket are not used
-                    conn.shutdown()
-                    conn.close()
+                    s.shutdown()
+                    s.close()
                     exit()
 
                 # Generate MQTT password from key used for nonce challenge solving
@@ -211,8 +212,8 @@ def main():
                 ticket_id = ticket_signed.ticket.ticket_id
 
         else:
-            conn.shutdown()
-            conn.close()
+            s.shutdown()
+            s.close()
 
 if __name__ == "__main__":
     main()

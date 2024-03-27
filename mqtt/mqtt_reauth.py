@@ -25,7 +25,7 @@ from collections import namedtuple
 MQTTConnectionState = namedtuple('MQTTConnectionState', ['cipherstate', 'mqtt_username', 'mqtt_password'])
 
 def mqtt_reauth_flow_client(client_cipherstate: CipherState, hmac_key: bytes, mqtt_username: str, mqtt_password: str, mqtt_topic: str):
-    
+    # On ticket expiry, trigger flow
     connection_state = MQTTConnectionState(cipherstate=client_cipherstate, mqtt_username=mqtt_username, mqtt_password=mqtt_password)._asdict()
     # Unpack the namedtuple which has been converted to a dictionary
     # as the named arguments of a function
