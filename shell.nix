@@ -9,5 +9,6 @@ with pkgs; mkShell {
     neovim
     capnproto
     poetry
+    vault
   ];
 }
