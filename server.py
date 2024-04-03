@@ -20,7 +20,7 @@ from authentication.challenges import verify_challenge_response
 
 from capnp_processing.request import generate_request_bytes
 
-from capnp_processing.ticket import generate_ticket_id, generate_mqtt_password, generate_mqtt_topic, generate_mqtt_username, generate_signed_ticket
+from capnp_processing.ticket import generate_ticket_id, generate_mqtt_password, generate_mqtt_topic, generate_mqtt_username, generate_signed_token
 
 import mqtt.dynsec_mqtt as dyns
 
@@ -169,50 +169,21 @@ def main():
                 enc_key = server_cipherstate.encrypt_with_ad(b'', key)
                 conn.sendall(enc_key)
 
-            enc_register_req_bytes = conn.recv(1028)
-            register_req_bytes = client_cipherstate.decrypt_with_ad(b'', enc_register_req_bytes)
-            register_request = request.from_bytes_packed(register_req_bytes)
-            
-            if register_request.requestType == 'register':
-                challenge = secrets.token_bytes(64)
-                enc_challenge_request = generate_request_bytes(requestType='challenge', cipherState=server_cipherstate, nonce=challenge, solution=False)
-                conn.sendall(enc_challenge_request)
-            else:
-                conn.shutdown()
-                conn.close()
-            
-            # Receive the clients solved response
-            enc_response_req_bytes = conn.recv(1028)
-            response_req_bytes = client_cipherstate.decrypt_with_ad(b'', enc_response_req_bytes)
-            response_request = request.from_bytes_packed(response_req_bytes)
-
-            if response_request.requestType == 'response':
-                result = verify_challenge_response(nonce_challenge=challenge, nonce_solution=response_request.nonceSolution, hmac_key=key)
-                if result == True:
-                    enc_success_reply = generate_request_bytes(requestType='status', cipherState=server_cipherstate, status=True, statusCode=200)
-                    conn.sendall(enc_success_reply)
-                else:
-                    enc_error_reply = generate_request_bytes(requestType='status', cipherState=server_cipherstate, status=True, statusCode=401)
-                    conn.sendall(enc_error_reply)
-                    conn.shutdown()
-                    conn.close()
-            else:
-                enc_error_reply = generate_request_bytes(requestType='status', cipherState=server_cipherstate, status=True, statusCode=400)
-                conn.sendall(enc_error_reply)
-                conn.shutdown()
-                conn.close()
-            
             ## Sending back a successful authentication and registration ticket
             ticket_id = generate_ticket_id()
             ## Generate mqtt topic by taking clients public key and shared nonce solving key as inputs
             mqtt_topic = "auth/" + generate_mqtt_topic(public_bytes=public_bytes, key=key)
             mqtt_username = generate_mqtt_username(public_bytes=public_bytes)
+            # TODO: Change how password is generated
             mqtt_password = generate_mqtt_password(key=key)
+            # TODO: Add seed generation
+            # TODO: Add device_ID
 
-            signed_ticket = generate_signed_ticket(private_key=private_key, ticket_id=ticket_id, mqtt_topic=mqtt_topic, mqtt_username=mqtt_username)
-            enc_signed_ticket_bytes = server_cipherstate.encrypt_with_ad(b'', signed_ticket.to_bytes_packed())
+            # Generate a signed token, encrypt and send
+            signed_token = generate_signed_token(private_key=private_key, ticket_id=ticket_id, mqtt_topic=mqtt_topic, mqtt_username=mqtt_username)
+            enc_signed_token_bytes = server_cipherstate.encrypt_with_ad(b'', signed_token.to_bytes_packed())
 
-            conn.sendall(enc_signed_ticket_bytes)
+            conn.sendall(enc_signed_token_bytes)
 
             ## Setting up Dynamic Security 
             # After registration and nonce authentication, create on the broker an account with the generated 

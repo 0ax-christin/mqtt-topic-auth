@@ -60,7 +60,10 @@ def main():
         with open('keys/client/client_static_keypair.pickle', 'wb') as keypair_file:
             pickle.dump(client_static, keypair_file)
 
-    client_handshakestate = HandshakeState(
+
+
+
+        client_handshakestate = HandshakeState(
             SymmetricState(
                 CipherState(
                     ChaChaPolyCipher()
@@ -68,22 +71,21 @@ def main():
                 Blake2sHash()
             ),
             X25519DH()
-        )
+            )
+        client_handshakestate.initialize(XXHandshakePattern(), True, b'', s=client_static)
 
-    client_handshakestate.initialize(XXHandshakePattern(), True, b'', s=client_static)
+        # Clients long term keypair for public key authentication
+        private_bytes, public_bytes = generate_ED25519_keypair(isBytes=True)
 
-    # Clients long term keypair for public key authentication
-    private_bytes, public_bytes = generate_ED25519_keypair(isBytes=True)
-
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.connect((HOST, PORT))
-        private_key = Ed25519PrivateKey.from_private_bytes(private_bytes)
-        
-        ## Authenticate server to the client
-        # 1. Send challenge to the server
-        random_bits = secrets.token_bytes(32)
-        client_challenge = generate_request_bytes(requestType="register", nonce=random_bits)
-        s.sendall(client_challenge)
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.connect((HOST, PORT))
+            private_key = Ed25519PrivateKey.from_private_bytes(private_bytes)
+            
+           ## Authenticate server to the client
+           # 1. Send challenge to the server
+           random_bits = secrets.token_bytes(32)
+           client_challenge = generate_request_bytes(requestType="register", nonce=random_bits)
+           s.sendall(client_challenge)
 
         # 2. Receive the solution, verify with public key
         signed_challenge_response = request.from_bytes_packed(s.recv(80))
@@ -115,7 +117,7 @@ def main():
        else:
            s.shutdown()
            s.close()
-        # Receive back the result, which indicates whether authentication passed or failed
+           # Receive back the result, which indicates whether authentication passed or failed
         result_reply = request.from_bytes_packed(s.recv(1024))
         if result_reply.statusCode == 200:
             # -> e
@@ -155,55 +157,26 @@ def main():
                 with open('keys/shared/hmac_key.txt', 'rb') as reader:
                     key = reader.read()
 
-            ## REGISTRATION PHASE ##
-            # Sending first register request
-            enc_register_request  = generate_request_bytes(requestType='register', cipherState=client_cipherstate, nonce=None, solution=False)
-            s.sendall(enc_register_request)
-
-            # Receive the server challenge
-            enc_challenge_req_bytes = s.recv(1028)
-            challenge_req_bytes = server_cipherstate.decrypt_with_ad(b'', enc_challenge_req_bytes)
-            challenge_request = request.from_bytes_packed(challenge_req_bytes)
-
-            if challenge_request.requestType == 'challenge':
-                response = generate_challenge_response(nonce_challenge=challenge_request.nonceChallenge, hmac_key=key)
-                ## Send challenge response
-                enc_challenge_solution = generate_request_bytes(requestType='response', cipherState=client_cipherstate, nonce=response, solution=True)
-                s.sendall(enc_challenge_solution)
-            else:
+            enc_signed_token_bytes = s.recv(1500)
+            signed_token_bytes = server_cipherstate.decrypt_with_ad(b'', enc_signed_token_bytes)
+            token_signed = signed_ticket.from_bytes_packed(signed_token_bytes)
+            # Client verifies signed ticket with the servers public key
+            try:
+                verify_result = server_public_key.verify(token_signed.signature, token_signed.ticket)
+                ## Else success reply?
+            except InvalidSignature:
+                ## Error Reply for Bad Signature on Signed Ticket
+                ## Program and socket closes and the values of the ticket are not used
                 s.shutdown()
                 s.close()
-            
-            enc_solution_reply_bytes = s.recv(1024)
-            solution_reply_bytes = server_cipherstate.decrypt_with_ad(b'', enc_solution_reply_bytes)
-            solution_reply = request.from_bytes_packed(solution_reply_bytes)
+                exit()
 
-            if solution_reply.statusCode != 200:
-                print("Failure!")
-                s.shutdown()
-                s.close()
-            else:
-                print("Success!")
-                enc_signed_ticket_bytes = s.recv(1500)
-                signed_ticket_bytes = server_cipherstate.decrypt_with_ad(b'', enc_signed_ticket_bytes)
-                ticket_signed = signed_ticket.from_bytes_packed(signed_ticket_bytes)
-                # Client verifies signed ticket with the servers public key
-                try:
-                    verify_result = server_public_key.verify(ticket_signed.signature, ticket_signed.ticket)
-                    ## Else success reply?
-                except InvalidSignature:
-                    ## Error Reply for Bad Signature on Signed Ticket
-                    ## Program and socket closes and the values of the ticket are not used
-                    s.shutdown()
-                    s.close()
-                    exit()
-
-                # Generate MQTT password from key used for nonce challenge solving
-                mqtt_password = generate_mqtt_password(key=key)
-                # Client stores in memory the below values to be used in reauthentication via MQTT topics
-                mqtt_username = ticket_signed.ticket.mqttUsername
-                mqtt_topic = ticket_signed.ticket.mqttTopic
-                ticket_id = ticket_signed.ticket.ticket_id
+            # Generate MQTT password from key used for nonce challenge solving
+            mqtt_password = generate_mqtt_password(key=key)
+            # Client stores in memory the below values to be used in reauthentication via MQTT topics
+            mqtt_username = ticket_signed.ticket.mqttUsername
+            mqtt_topic = ticket_signed.ticket.mqttTopic
+            ticket_id = ticket_signed.ticket.ticket_id
 
         else:
             s.shutdown()
