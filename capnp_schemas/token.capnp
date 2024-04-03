@@ -1,6 +1,6 @@
 @0xa95e4927317114f4;
 
-struct Ticket {
+struct Token {
     ticketId @0 :Text;
     # A unique ticket ID, generated as a random uuid hex string
     mqttTopic @1 :Text;
@@ -9,7 +9,7 @@ struct Ticket {
     # The devices username by which it can publish data
 }
 
-struct SignedTicket {
-    ticket @0 :Ticket;
+struct SignedToken {
+    token@0 :Token;
     signature @1 :Data;
 }
