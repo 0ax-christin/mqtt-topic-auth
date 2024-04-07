@@ -18,6 +18,4 @@ struct Request {
 
     requestType @3 :RequestType;
     # Represents the type of request in the protocol
-
-   
 }
