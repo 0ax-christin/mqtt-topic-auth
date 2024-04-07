@@ -1,4 +1,5 @@
-import dissononce, logging, socket, os, secrets, pickle, capnp
+import dissononce, logging, socket, os, secrets, pickle, capnp, hvac, uuid, threading, socketserver
+from time import time
 
 from dissononce.processing.impl.handshakestate import HandshakeState
 from dissononce.processing.impl.symmetricstate import SymmetricState
@@ -7,22 +8,22 @@ from dissononce.processing.handshakepatterns.interactive.XX import XXHandshakePa
 from dissononce.cipher.chachapoly import ChaChaPolyCipher
 from dissononce.dh.x25519.x25519 import X25519DH
 from dissononce.hash.blake2s import Blake2sHash
-from dissononce.extras.processing.handshakestate_guarded import GuardedHandshakeState
 
-from keygen.generate_keys import generate_ED25519_keypair
+from keygen.generate_keys import generate_ED25519_keypair_server_bytes
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
-from cryptography.hazmat.primitives import hashes, hmac
 from cryptography.exceptions import InvalidSignature
 
-from authentication.challenges import verify_challenge_response
+from schema_factory import generate_request_bytes, generate_signed_ticket,generate_mqtt_topic, generate_mqtt_password, generate_mqtt_username, generate_signed_token, generate_status_reply_bytes
 
-from capnp_processing.request import generate_request_bytes
-
-from capnp_processing.ticket import generate_ticket_id, generate_mqtt_password, generate_mqtt_topic, generate_mqtt_username, generate_signed_token
-
+from hvac.exceptions import InvalidPath
 import mqtt.dynsec_mqtt as dyns
+
+from pathlib import Path
+from cryptography.fernet import Fernet
+from dotenv import load_dotenv
+load_dotenv()
 
 capnp.remove_import_hook()
 request_capnp = capnp.load('capnp_schemas/request.capnp')
@@ -30,6 +31,8 @@ ticket_capnp = capnp.load('capnp_schemas/ticket.capnp')
 
 HOST = "127.0.0.1"
 PORT = 63000
+
+
 '''
 Check that a given public key in byte string exists in authorized_keys
 '''
@@ -96,6 +99,30 @@ def main():
             if result_reply.statusCode != 200:
                 conn.shutdown()
                 conn.close()
+def setup_static_keypair():
+    client = hvac.Client(url=os.getenv("VAULT_HOST"), token=os.getenv("VAULT_TOKEN"))
+    try:
+        response = client.secrets.kv.read_secret_version("server")
+        server_static = response['data']['data']['noise_static_keypair']
+        if server_static == '':
+            print("Server static key was empty, generating keypair and adding to vault..")
+            server_static = X25519DH().generate_keypair()    
+            pickled_server_static = pickle.dumps(server_static).hex()
+            client.secrets.kv.v2.create_or_update_secret(
+                path='server',
+                secret=dict(noise_static_keypair=pickled_server_static, identity_keypair='')
+            ) 
+        else:
+            print("Reading existing server static value from vault")
+            pickled_server_static = client.secrets.kv.read_secret_version(path="server")['data']['data']['noise_static_keypair']
+            server_static = pickle.loads(bytes.fromhex(pickled_server_static))
+        return server_static
+    except InvalidPath:
+        #Creates the servers path with empty fields which will be updated
+        client.secrets.kv.v2.create_or_update_secret(
+            path='server',
+            secret=dict(noise_static_keypair='', identity_keypair='')
+        ) 
                 exit()
 
             # First, a public key is expected from client
