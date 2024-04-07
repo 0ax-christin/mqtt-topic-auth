@@ -37,6 +37,14 @@ async def get_subscribed_topic(mqtt_username: str, mqtt_password: str, mqtt_topi
 async def publish_to_topic(mqtt_username: str, mqtt_password: str, mqtt_topic: str, mqtt_payload: bytes):
     async with aiomqtt.Client(hostname=os.getenv("HOSTNAME"), port=int(os.getenv("PORT")), username=mqtt_username, password=mqtt_password, protocol=int(os.getenv("PROTOCOL_VER"))) as client:
         await client.publish(mqtt_topic, payload=mqtt_payload)
+
+def generate_random_seed_bytes(seed, reauth_number):
+    random.seed(seed)
+    rand_bytes = b''
+    for i in range(reauth_number):
+        rand_bytes = random.randbytes(48)
+    return rand_bytes
+
 def mqtt_reauth_flow_client(client_cipherstate: CipherState, server_cipherstate: CipherState, hmac_key: bytes, mqtt_username: str, mqtt_password: str, mqtt_topic: str, seed: bytes):
     # On ticket expiry, trigger flow
     connection_state = MQTTConnectionState(mqtt_username=mqtt_username, mqtt_password=mqtt_password)._asdict()
@@ -47,7 +55,9 @@ def mqtt_reauth_flow_client(client_cipherstate: CipherState, server_cipherstate:
     reauth_request = request.from_bytes_packed(reauth_req_bytes)
 
     if reauth_request.requestType == 'reauth':
-        response = generate_challenge_response(nonce_challenge=reauth_request.nonceChallenge, hmac_key=hmac_key)
+        # Need to store the reauthentication number somewhere so that the server knows which iteration of the bytes to generate
+        seed_rand_bytes = generate_random_seed_bytes(seed, reauth_number=1)
+        response = generate_challenge_response(nonce_challenge=reauth_request.nonceChallenge, hmac_key=hmac_key, rand_bytes=seed_rand_bytes)
 
         challenge_solution_bytes = generate_request_bytes(requestType='response', nonce=response, solution=True)
 
@@ -85,7 +95,9 @@ def mqtt_reauth_flow_server(client_cipherstate: CipherState, server_cipherstate:
     challenge_solution = request.from_bytes_packed(challenge_solution_bytes)
 
     if challenge_solution.requestType == 'response':
-        result = verify_challenge_response(nonce_challenge=nonce_challenge.to_bytes(64), nonce_solution=challenge_solution.nonceSolution, hmac_key=hmac_key)
+        # Need to store the reauthentication number somewhere so that the server knows which iteration of the bytes to generate
+        seed_rand_bytes = generate_random_seed_bytes(seed, reauth_number=1)
+        result = verify_challenge_response(nonce_challenge=nonce_challenge.to_bytes(64), nonce_solution=challenge_solution.nonceSolution, hmac_key=hmac_key, rand_bytes=seed_rand_bytes)
         if result == True:
             success_reply_bytes = generate_status_reply_bytes(statusCode=200)
 
