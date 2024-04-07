@@ -44,61 +44,7 @@ def public_key_exists(public_bytes):
                     return True
                 else:
                     return False
-def main():
-    dissononce.logger.setLevel(logging.DEBUG)
-    request = request_capnp.Request
-    ticket = ticket_capnp.Ticket
 
-    if os.path.exists('keys/server/server_static_keypair.pickle'):
-        with open('keys/server/server_static_keypair.pickle', 'rb') as keypair_file:
-            server_static = pickle.load(keypair_file)
-    else:
-        # Generate the long term static DH keypair
-        server_static = X25519DH().generate_keypair()
-    
-        # Serializing longterm static keypair
-        with open('keys/server/server_static_keypair.pickle', 'wb') as keypair_file:
-            pickle.dump(server_static, keypair_file)
-
-    server_handshakestate = HandshakeState(
-            SymmetricState(
-                CipherState(
-                    ChaChaPolyCipher()
-                ),
-                Blake2sHash()
-            ),
-            X25519DH()
-        )
-
-    server_handshakestate.initialize(XXHandshakePattern(), False, b'', s=server_static)
-    
-    # Generate identity keypair outside noise handshake, which is stored in a file
-    private_bytes, public_bytes = generate_ED25519_keypair(isBytes=True, server=True)
-
-    private_key = Ed25519PrivateKey.from_private_bytes(private_bytes)
-
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind((HOST, PORT))
-        s.listen()
-        conn, addr = s.accept()
-        with conn:
-            print(f"Connected by {addr}")
-
-            # 1. Server expects from the client a register request, with a challenge
-            # This challenge is for the server to sign and authenticate itself
-            client_challenge_req = request.from_bytes_packed(conn.recv(45))
-            client_challenge = client_challenge_req.nonceChallenge
-            signed_client_response = private_key.sign(client_challenge)
-            # 2. Server sends challenge response 
-            signed_challenge_response = generate_request_bytes(requestType="response", nonce=signed_client_response, solution=True) 
-            conn.sendall(signed_challenge_response)
-            # if the server has been verified, the flow continues, else client shutdowns the socket
-            # Check the result reply of the client to see whether statusCode is 200, for success, else shutdown this connection
-            result_reply = request.from_bytes_packed(conn.recv(20))
-
-            if result_reply.statusCode != 200:
-                conn.shutdown()
-                conn.close()
 def setup_static_keypair():
     client = hvac.Client(url=os.getenv("VAULT_HOST"), token=os.getenv("VAULT_TOKEN"))
     try:
@@ -123,105 +69,198 @@ def setup_static_keypair():
             path='server',
             secret=dict(noise_static_keypair='', identity_keypair='')
         ) 
+
+# Base path of the project directory
+base_path = Path(__file__).parent
+
+request = request_capnp.Request
+ticket = ticket_capnp.Ticket
+client = hvac.Client(url=os.getenv("VAULT_HOST"), token=os.getenv("VAULT_TOKEN"))
+
+try:
+    response = client.secrets.kv.read_secret_version("server")
+except InvalidPath:
+        #Creates the servers path with empty fields which will be updated
+        client.secrets.kv.v2.create_or_update_secret(
+            path='server',
+            secret=dict(noise_static_keypair='', identity_keypair='')
+        ) 
+
+server_static = setup_static_keypair()
+# Generate identity keypair outside noise handshake, which is stored in a file
+private_bytes, public_bytes = generate_ED25519_keypair_server_bytes(pickled_server_static=pickle.dumps(server_static).hex())
+# Temporary solution: Write update server public and private key file
+# As whenever Vault restarts in dev mode, the database is fresh, so it generates a new keypair
+# Must make sure client has the correct key pair in memory
+print(public_bytes)
+with open((base_path / f'./keys/server/public_key.txt').resolve(), 'wb') as writer:
+   writer.write(public_bytes)
+
+private_key = Ed25519PrivateKey.from_private_bytes(private_bytes)
+# Test out StreamRequestHandler, see if it works with CapnProto
+class ForkedTCPRequestHandler(socketserver.StreamRequestHandler):
+   def handle(self):
+        # 1. Server expects from the client a register request, with a challenge
+        # This challenge is for the server to sign and authenticate itself
+        # Rationale for readline()[:-1], to make it easy for readline to process sent bytes automatically,
+        # All requests have '\n' appended at the end, this must be removed before processing
+        client_challenge_req = request.from_bytes_packed(self.rfile.readline()[:-1])
+        client_challenge = client_challenge_req.nonceChallenge
+        signed_client_response = private_key.sign(client_challenge)
+        # 2. Server sends challenge response 
+        signed_challenge_response = generate_request_bytes(requestType="response", nonce=signed_client_response, solution=True) 
+        self.wfile.write(signed_challenge_response)
+        # if the server has been verified, the flow continues, else client shutdowns the socket
+        # Check the result reply of the client to see whether statusCode is 200, for success, else shutdown this connection
+        result_reply = request.from_bytes_packed(self.rfile.readline()[:-1])
+
+        if result_reply.statusCode != 200:
+            print("Exit time!")
+            self.rfile.close()
+            self.request.shutdown(socket.SHUT_RDWR)
+            self.request.close()
+            exit()
+
+        # First, a public key is expected from client
+        client_public_bytes = self.rfile.readline()[:-1]
+        print(client_public_bytes)
+        if public_key_exists(public_bytes=client_public_bytes):
+            print("Public key exists")
+            client_public_key = Ed25519PublicKey.from_public_bytes(client_public_bytes)
+            # If public key exists in authorized_keys, send random 32 bytes back as a challenge to sign
+            random_bits = secrets.token_bytes(32)
+            server_challenge = generate_request_bytes(requestType="challenge", nonce=random_bits)
+            self.wfile.write(server_challenge)
+
+            # Getting the signed response from the client
+            signed_client_response = request.from_bytes_packed(self.rfile.readline()[:-1])
+            signed_random_bits = signed_client_response.nonceSolution
+
+            try:
+                verify_result = client_public_key.verify(signed_random_bits, random_bits)
+                # If no exception has been raised, means that signature was correctly verified
+                if verify_result is None:
+                    print("Success")
+                    success_reply = generate_status_reply_bytes(statusCode=200)
+                    self.wfile.write(success_reply)
+            except InvalidSignature:
+                print("Invalid sign")
+                # 401 for unauthorized, authentication failed
+                error_reply = generate_status_reply_bytes(statusCode=401)
+                self.wfile.write(error_reply)
+                self.wfile.close()
                 exit()
+        else:
+            print("Sent public key not in authorized_keys!")
+            unauthorized_key_reply = generate_status_reply_bytes(statusCode=403)
+            self.wfile.write(unauthorized_key_reply)
+            self.wfile.close()
+            exit()
 
-            # First, a public key is expected from client
-            client_public_bytes = conn.recv(32)
+        server_handshakestate = HandshakeState(
+                        SymmetricState(
+                        CipherState(
+                                ChaChaPolyCipher()
+                        ),
+                        Blake2sHash()
+                        ),
+                        X25519DH()
+                    )
+
+        server_handshakestate.initialize(XXHandshakePattern(), False, b'', s=server_static)
+      
+        # Receiving ephemeral public key from client
+        message_buffer = self.rfile.readline()
+        server_handshakestate.read_message(bytes(message_buffer[:-1]), bytearray())
+
+        # For the server side message pattern
+        # <- e, ee, s, es
+        message_buffer = bytearray() 
+        server_handshakestate.write_message(b'', message_buffer) 
+        # Sending message buffer to client, this will have ephemeral public key of server
+        # Server then performs DH to get shared secret, uses this to send static public key under encryption
+        self.wfile.write(message_buffer)
+
+        # -> s, se
+        message_buffer = self.rfile.readline()[:-1]
+        shared_cipherstates = server_handshakestate.read_message(bytes(message_buffer), bytearray())
+        client_cipherstate = shared_cipherstates[0]
+        server_cipherstate = shared_cipherstates[1]
         
-            if public_key_exists(public_bytes=client_public_bytes):
-                client_public_key = Ed25519PublicKey.from_public_bytes(client_public_bytes)
-                # If public key exists in authorized_keys, send random 32 bytes back as a challenge to sign
-                random_bits = secrets.token_bytes(32)
-                server_challenge = generate_request_bytes(requestType="challenge", nonce=random_bits)
-                conn.sendall(server_challenge)
+        # Every request after this is under encryption of the noise handshake
 
-                # Getting the signed response from the client
-                signed_client_response = request.from_bytes_packed(conn.recv(80))
-                signed_random_bits = signed_client_response.nonceSolution
-                
-                try:
-                    verify_result = client_public_key.verify(signed_random_bits, random_bits)
-                    # If no exception has been raised, means that signature was correctly verified
-                    if verify_result is None:
-                        success_reply = generate_request_bytes(requestType='status', status=True, statusCode=200)
-                        conn.sendall(success_reply)
-                except InvalidSignature:
-                    # 401 for unauthorized, authentication failed
-                    error_reply = generate_request_bytes(requestType='status', status=True, statusCode=401)
-                    conn.sendall(error_reply)
-                    conn.shutdown()
-                    conn.close()
-                    exit()
-            else:
-              unauthorized_key_reply = generate_request_bytes(requestType='status', status=True, statusCode=403)
-              conn.sendall(unauthorized_key_reply)
-              conn.shutdown()
-              conn.close()
-              exit()
-              
-                    
-            # Receiving ephemeral public key from client
-            message_buffer = conn.recv(1024)
-            
-            server_handshakestate.read_message(bytes(message_buffer), bytearray())
+        # Load shared HMAC Keys if present, else send a newly generated 128 bit key to be used as HMAC
+        # Initialize a secret path with the identifier of the clients public key, where the
+        # pickled established cipherstates from a noise handshake and the generated HMAC key are stored
+        # The assumption is that a registering client device has not registered previously and thus would
+        # not have a path. This part of the code creates the path 
+        client.secrets.kv.v2.create_or_update_secret(
+            path=client_public_bytes.hex(),
+            secret=dict(established_cipherstates='', hmac_key='')
+        ) 
+        pickled_shared_cipherstates = pickle.dumps(shared_cipherstates).hex()
 
-            # For the server side message pattern
-            # <- e, ee, s, es
-            message_buffer = bytearray() 
-            server_handshakestate.write_message(b'', message_buffer) 
-            # Sending message buffer to client, this will have ephemeral public key of server
-            # Server then performs DH to get shared secret, uses this to send static public key under encryption
-            conn.sendall(message_buffer)
+        key = secrets.token_bytes(128)
+        hmac_key_hexed = key.hex()
 
-            # -> s, se
-            message_buffer = conn.recv(1024)
-            shared_cipherstates = server_handshakestate.read_message(bytes(message_buffer), bytearray())
-            client_cipherstate = shared_cipherstates[0]
-            server_cipherstate = shared_cipherstates[1]
+        # Populate the values of the secret path with the cipher states and hmac_key
+        client.secrets.kv.v2.create_or_update_secret(
+            path=client_public_bytes.hex(),
+            secret=dict(established_cipherstates=pickled_shared_cipherstates, hmac_key=hmac_key_hexed)
+        ) 
+        # Send only thing after noise handshake, an encrypted, signed token to the client
+        # Generate the values for the fields of the Token and Ticket
+        ticket_id = uuid.uuid4().hex
+        ## Generate mqtt topic by taking clients public key and shared nonce solving key as inputs
+        mqtt_topic = "auth/" + generate_mqtt_topic(public_bytes=client_public_bytes, key=key)
+        mqtt_username = generate_mqtt_username(public_bytes=client_public_bytes)
+        mqtt_password = generate_mqtt_password(key=key)
+        seed = secrets.token_bytes(128)
+        device_id = uuid.uuid4().hex
 
-            with open('keys/shared/server_cipherstates.pickle', 'wb') as f:
-                pickle.dump(shared_cipherstates, f)
-            
-            # Every request after this is under encryption of the noise handshake
+        # Generate a signed token, encrypt and send
+        signed_token = generate_signed_token(private_key=private_key, ticket_id=ticket_id, mqtt_topic=mqtt_topic, mqtt_username=mqtt_username, hmac_key=key, seed=seed)
+        # Set default expiry time of the ticket at the beginning to an hour
+        #Stored as int in UNIX time
+        # Expiry is set as an hour (3600 seconds) from the time the timestamp was generated
+        expiry = int(time()) + 3600
+        signed_ticket = generate_signed_ticket(private_key=private_key, ticket_id=ticket_id,
+                                                device_id=device_id, public_key=client_public_bytes,
+                                                expiry=expiry, seed=seed, hmac_key=key)
 
-            # Load shared HMAC Keys if present, else send a newly generated 128 bit key to be used as HMAC
-            # Send hmac key after noise established
-            if os.path.exists('keys/shared/hmac_key.txt'):
-                with open('keys/shared/hmac_key.txt', 'rb') as reader:
-                    key = reader.read()
-            else:
-                key = secrets.randbits(128).to_bytes(128)
-                with open('keys/shared/hmac_key.txt', 'wb') as writer:
-                    writer.write(key)
-                enc_key = server_cipherstate.encrypt_with_ad(b'', key)
-                conn.sendall(enc_key)
+        enc_signed_token_bytes = server_cipherstate.encrypt_with_ad(b'', signed_token.to_bytes_packed())
+        # Send generated signed token
+        self.wfile.write(enc_signed_token_bytes)
+        # Do blockchain committing of created ticket
+        
 
-            ## Sending back a successful authentication and registration ticket
-            ticket_id = generate_ticket_id()
-            ## Generate mqtt topic by taking clients public key and shared nonce solving key as inputs
-            mqtt_topic = "auth/" + generate_mqtt_topic(public_bytes=public_bytes, key=key)
-            mqtt_username = generate_mqtt_username(public_bytes=public_bytes)
-            # TODO: Change how password is generated
-            mqtt_password = generate_mqtt_password(key=key)
-            # TODO: Add seed generation
-            # TODO: Add device_ID
+        ## Setting up Dynamic Security 
+        # REQUIREMENT: Must have Mosquitto broker correctly set up
+        # After registration and nonce authentication, create on the broker an account with the generated 
+        # mqtt username and password
+        # dyns.create_client(mqtt_username)
+        # dyns.set_client_password(mqtt_username, mqtt_password)
+        # dyns.set_dynsec_topic(mqtt_username, mqtt_topic)
 
-            # Generate a signed token, encrypt and send
-            signed_token = generate_signed_token(private_key=private_key, ticket_id=ticket_id, mqtt_topic=mqtt_topic, mqtt_username=mqtt_username)
-            enc_signed_token_bytes = server_cipherstate.encrypt_with_ad(b'', signed_token.to_bytes_packed())
+class ForkedTCPServer(socketserver.ForkingMixIn, socketserver.TCPServer):
+    pass
 
-            conn.sendall(enc_signed_token_bytes)
+def main():
+   dissononce.logger.setLevel(logging.DEBUG)
+   # Load Noise server static key pair to memory
 
-            ## Setting up Dynamic Security 
-            # After registration and nonce authentication, create on the broker an account with the generated 
-            # mqtt username and password
-            dyns.create_client(mqtt_username)
-            dyns.set_client_password(mqtt_username, mqtt_password)
-
-            dyns.set_dynsec_topic(mqtt_username, mqtt_topic)
-
-            # Generate Ticket to commit to blockchain
-            # 
+   server = ForkedTCPServer((HOST, PORT), ForkedTCPRequestHandler)
+   with server:
+      try:
+         #server_thread = threading.Thread(target=server.serve_forever)
+         print("Serving forever...")
+         server.serve_forever()
+         #server_thread.daemon = True
+         #server_thread.start()
+         #print("Server loop running in thread:", server_thread.name)
+      except KeyboardInterrupt:
+         server.shutdown()
+         server.server_close()
 
 if __name__ == "__main__":
-    main()
+   main()
