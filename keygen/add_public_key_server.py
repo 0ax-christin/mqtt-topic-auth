@@ -10,6 +10,18 @@ base_path = Path(__file__).parent
 
 
 def main():
+    """
+    This is the server part of a program for testing purposes which listens on port 63010 for a client to send a ED25519 public
+    key in bytes. The server takes the public bytes and first checks if it already exists in the file 'authorized_keys'
+    by reading 32 bytes and comparing to the received bytes. If it does, the server sends to the client a message
+    that the public key already exists and exits. If it doesnt exist, the bytes are written onto the 'authorized_keys' file.
+
+    This 'authorized_keys' file serves as a store of all the valid and authorized public keys of clients which are able
+    to register with the server. This program is meant for testing purposes to easily add a clients public key to the servers
+    authorized list. It is not secure as it does not have any integrity checking mechanisms that prevent an attacker from
+    manipulating the payload.
+
+    """
     with socket(AF_INET, SOCK_STREAM) as s:
         s.setsockopt(SOL_SOCKET, SO_REUSEADDR, 1)
         s.bind((HOST, PORT))

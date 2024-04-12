@@ -1,3 +1,12 @@
+"""Module containing the code to generate ED25519 identity keypairs on server and client and store in respective backends
+
+The server uses Hashicorp vault as its backend for storing its identity keypair and Noise static keypair.
+The client uses a simple file for storing both keypairs in a directory.
+These are utility functions used to generate keypairs if they dont exist, or else read the existing long term values
+and return them in the form of bytes.
+This identity keypair is a ED25519 keypair that is used by the client and server to verify each other outside the Noise protocol
+"""
+
 from os.path import exists
 from os import getenv
 from hvac import Client
@@ -13,7 +22,18 @@ load_dotenv()
 base_path = Path(__file__).parent
 
 
-def generate_ED25519_keypair_server_bytes(pickled_server_static):
+def generate_ED25519_keypair_server_bytes(
+    pickled_server_static: str,
+) -> tuple[bytes, bytes]:
+    """Generate ED25519 keypair and store to Hashicorp Vault if it does not exist, else read from Vault
+    Parameters
+    ----------
+    pickled_server_static:str
+    Returns
+    -------
+    public_bytes:bytes
+    private_bytes:bytes
+    """
     client = Client(url=getenv("VAULT_HOST"), token=getenv("VAULT_TOKEN"))
     response = client.secrets.kv.read_secret_version("server")
     server_identity = response["data"]["data"]["identity_keypair"]
@@ -56,7 +76,13 @@ def generate_ED25519_keypair_server_bytes(pickled_server_static):
     return (private_bytes, public_bytes)
 
 
-def generate_ED25519_keypair_client_bytes():
+def generate_ED25519_keypair_client_bytes() -> tuple[bytes, bytes]:
+    """Generate ED25519 keypair and store in a file if it does not exist, else read from existing file
+    Returns
+    -------
+    public_bytes:bytes
+    private_bytes:bytes
+    """
     if exists((base_path / "../keys/client/private_key.txt").resolve()):
         with open(
             (base_path / "../keys/client/private_key.txt").resolve(), "rb"
@@ -94,11 +120,3 @@ def generate_ED25519_keypair_client_bytes():
         encoding=serialization.Encoding.Raw, format=serialization.PublicFormat.Raw
     )
     return (private_bytes, public_bytes)
-
-
-def main():
-    private_key, public_key = generate_ED25519_keypair()
-
-
-if __name__ == "__main__":
-    main()

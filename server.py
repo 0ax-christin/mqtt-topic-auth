@@ -50,12 +50,10 @@ HOST = "127.0.0.1"
 PORT = 63000
 
 
-"""
-Check that a given public key in byte string exists in authorized_keys
-"""
-
-
 def public_key_exists(public_bytes):
+    """
+    Check that a given public key in byte string exists in authorized_keys
+    """
     if exists("authorized_keys"):
         with open("authorized_keys", "rb") as reader:
             while current_public_bytes := reader.read(32):

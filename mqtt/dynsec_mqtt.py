@@ -18,7 +18,7 @@ options = [
 mosquitto_base_cmd = ["mosquitto_ctrl"] + options + ["dynsec"]
 
 
-def create_client(username, client_id=None):
+def create_client(username: str, client_id: str) -> subprocess.CompletedProcess:
     add_client_id = []
     if client_id is not None:
         add_client_id = ["-i", client_id]
@@ -30,14 +30,16 @@ def create_client(username, client_id=None):
     return create_client_result
 
 
-def create_role(role_name):
+def create_role(role_name: str) -> subprocess.CompletedProcess:
     create_acl_role_result = subprocess.run(
         mosquitto_base_cmd + ["createRole", role_name]
     )
     return create_acl_role_result
 
 
-def add_role_acl(role_name, acl_type, topic_filter, access, priority):
+def add_role_acl(
+    role_name: str, acl_type: str, topic_filter: str, access: str, priority: str
+) -> subprocess.CompletedProcess:
     acl_type_list = [
         "publishClientSend",
         "publishClientReceive",
@@ -58,28 +60,32 @@ def add_role_acl(role_name, acl_type, topic_filter, access, priority):
     return add_acl_result
 
 
-def create_group(group_name):
+def create_group(group_name: str) -> subprocess.CompletedProcess:
     create_group_result = subprocess.run(
         mosquitto_base_cmd + ["createGroup", group_name]
     )
     return create_group_result
 
 
-def add_group_role(group_name, role_name, priority):
+def add_group_role(
+    group_name: str, role_name: str, priority: str
+) -> subprocess.CompletedProcess:
     add_group_role_result = subprocess.run(
         mosquitto_base_cmd + ["addGroupRole", group_name, role_name, priority]
     )
     return add_group_role_result
 
 
-def add_group_client(group_name, username, priority):
+def add_group_client(
+    group_name: str, username: str, priority: str
+) -> subprocess.CompletedProcess:
     add_group_client_result = subprocess.run(
         mosquitto_base_cmd + ["addGroupClient", group_name, username, priority]
     )
     return add_group_client_result
 
 
-def set_client_password(username, password):
+def set_client_password(username: str, password: str) -> subprocess.CompletedProcess:
     set_password_result = subprocess.run(
         mosquitto_base_cmd + ["setClientPassword", username, password]
     )
@@ -87,7 +93,7 @@ def set_client_password(username, password):
 
 
 # Disable Client of given username if they fail to solve the nonce
-def disable_client(username):
+def disable_client(username: str) -> subprocess.CompletedProcess:
     disable_client_result = subprocess.run(
         mosquitto_base_cmd + ["disableClient", username]
     )
@@ -95,7 +101,7 @@ def disable_client(username):
 
 
 # Remove a client of given username if they fail to solve the nonce
-def remove_group_client(group_name, username):
+def remove_group_client(group_name: str, username: str) -> subprocess.CompletedProcess:
     remove_group_client_result = subprocess.run(
         mosquitto_base_cmd + ["removeGroupClient", group_name, username]
     )
@@ -109,7 +115,7 @@ def remove_group_client(group_name, username):
 # Add this role to the group
 # As the admin and client are members of the group, the ACLs apply to them for the given auth topic, allowing only these
 # two parties to publish and subscribe
-def set_dynsec_topic(mqtt_username, mqtt_topic):
+def set_dynsec_topic(mqtt_username: str, mqtt_topic: str) -> None:
     mqtt_acl = f"{mqtt_username}-acl"
     mqtt_group = f"{mqtt_username}-group"
 

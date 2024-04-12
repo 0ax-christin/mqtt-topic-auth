@@ -17,14 +17,15 @@ signed_ticket = ticket_capnp.SignedTicket
 signed_token = token_capnp.SignedToken
 
 
-def is_valid_token_signature(public_key: Ed25519PublicKey, signed_token: signed_token):
+def is_valid_token_signature(
+    public_key: Ed25519PublicKey, signed_token: signed_token
+) -> bool:
     try:
-        result = public_key.verify(
+        public_key.verify(
             signed_token.signature,
             sha3_256(signed_token.token.to_bytes_packed()).digest(),
         )
-        if result is None:
-            return True
+        return True
     except InvalidSignature:
         return False
 

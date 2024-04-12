@@ -8,6 +8,10 @@ base_path = Path(__file__).parent
 
 
 def main():
+    """
+    Client part of socket program to add a clients public key onto an edge servers 'authorized_keys' file automatically
+    for testing. Used for testing purposes.
+    """
     with socket(AF_INET, SOCK_STREAM) as s:
         s.connect((HOST, PORT))
         with open(
