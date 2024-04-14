@@ -6,6 +6,8 @@ in
 with pkgs; mkShell {
   packages = [
     git
+    python3
+    python311Packages.dissononce
     neovim
     capnproto
     poetry
