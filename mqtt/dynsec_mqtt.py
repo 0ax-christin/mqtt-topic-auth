@@ -1,3 +1,12 @@
+"""
+This module is a thin wrapper used to execute commands to manipulate Mosquitto MQTT Broker's Dynamic Security feature.
+Full capabilities of mosquitto_ctrl can be referenced here: https://mosquitto.org/documentation/dynamic-security/
+It uses subprocess.run to run the 'mosquitto_ctrl' command's dynsec subcommand with the required options.
+The authorization used to manipulate this feature is the Admin user credentials of the MQTT broker
+The essential functionality from the command line is implemented as separate functions to be combined in set_dynsec_topic() that
+is meant to add two existing users (admin and client) to a group with a role that allows only these two users to publish and
+subscribe to an authentication topic
+"""
 import subprocess
 from dotenv import load_dotenv
 import os

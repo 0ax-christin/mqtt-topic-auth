@@ -38,17 +38,16 @@ def main():
     logger.setLevel(DEBUG)
     client_static = ""
     server_public_bytes = b""
-    # All clients have the server public key stored in them
+    # All clients have the server public key stored in them, at the start of the program, it is loaded to memory
     print((base_path / "./keys/server/public_key.txt").resolve())
     if exists((base_path / "./keys/server/public_key.txt").resolve()):
         with open(
             (base_path / "./keys/server/public_key.txt").resolve(), "rb"
         ) as reader:
             server_public_bytes = reader.read()
-            print(server_public_bytes)
     server_public_key = Ed25519PublicKey.from_public_bytes(server_public_bytes)
 
-    print((base_path / "keys/client/client_static_keypair.pickle").resolve())
+    # Only generate the long term noise client static keypair if it has not been generated before
     if exists((base_path / "keys/client/client_static_keypair.pickle").resolve()):
         with open(
             (base_path / "keys/client/client_static_keypair.pickle").resolve(), "rb"
@@ -69,11 +68,12 @@ def main():
     )
     client_handshakestate.initialize(XXHandshakePattern(), True, b"", s=client_static)
 
-    # Clients long term keypair for public key authentication
+    # Clients long term keypair for public key authentication outside Nonce handshake
     private_bytes, public_bytes = generate_ED25519_keypair_client_bytes()
 
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.connect((HOST, PORT))
+        # Load client private key to memory
         private_key = Ed25519PrivateKey.from_private_bytes(private_bytes)
 
         ## Authenticate server to the client
@@ -82,15 +82,20 @@ def main():
         client_challenge = generate_request_bytes(
             requestType="register", nonce=random_bits
         )
+        # All packets are sent with '\n' appended to the end so that the server can easily read using
+        # a file method like readFile
         s.sendall(client_challenge + b"\n")
 
         # 2. receive the solution, verify with public key
         signed_challenge_response = request.from_bytes_packed(s.recv(80))
+        # The solution is inside a CapnProto Schema and thus must be loaded to memory and have the value extracted
         signed_random_bits = signed_challenge_response.nonceSolution
 
         try:
             verify_result = server_public_key.verify(signed_random_bits, random_bits)
             # if no exception has been raised, means that signature was correctly verified
+            # Generate a reply as a CapnProto schema packet indicating status to the receiver of success or failure
+            # StatusCodes similar to HTTP are used
             if verify_result is None:
                 success_reply_bytes = generate_status_reply_bytes(statusCode=200)
                 s.sendall(success_reply_bytes + b"\n")
@@ -103,15 +108,17 @@ def main():
             s.close()
             exit()
 
+        # if the server has been verified, the client must verify its own identity.
         # send the clients public key
         s.sendall(public_bytes + b"\n")
 
         server_response = request.from_bytes_packed(s.recv(45))
-        print(server_response.requestType)
+        # Check that server gives the request in the correct format
         if server_response.requestType == "challenge":
             print("Creating clients response")
             server_challenge = server_response.nonceChallenge
             signed_client_response = private_key.sign(server_challenge)
+            # Encapsulate response in CapnProto to be sent over the wire as bytes
             signed_client_response = generate_request_bytes(
                 requestType="response", nonce=signed_client_response, solution=True
             )
@@ -129,6 +136,7 @@ def main():
         result_reply = request.from_bytes_packed(result_reply)
         print(result_reply.statusCode)
 
+        # Continue on with performing Noise handshake to establish symmetric keys only if server gives back successful reply
         if result_reply.statusCode == 200:
             # -> e
             message_buffer = bytearray()
@@ -155,10 +163,11 @@ def main():
             # Sends public static key of client to server, does the final DH on both sides
             s.sendall(message_buffer + b"\n")
 
-            # Save derived cipherstate so it can be used later
+            # Save derived cipherstate so it can be used later for any later communications
             with open("keys/shared/client_cipherstates.pickle", "wb") as f:
                 dump(shared_cipherstates, f)
 
+            # Receive a signed token under encryption as an indication of successful registration
             enc_signed_token_bytes = s.recv(1500)
             signed_token_bytes = server_cipherstate.decrypt_with_ad(
                 b"", enc_signed_token_bytes
@@ -173,7 +182,10 @@ def main():
             )
 
             # Client verifies signed ticket with the servers public key
+            # To make sure that the token is from the server
             try:
+                # Extract the token, turn it to bytes from the signed token structure and then verify
+                # as the signature was generated over the sha3 hash of the bytes of the token
                 verify_result = server_public_key.verify(
                     token_signed.signature,
                     sha3_256(original_token.to_bytes_packed()).digest(),
@@ -186,7 +198,7 @@ def main():
                 s.close()
                 exit()
             key = token_signed.token.hmacKey
-            print(key)
+            # Store the hmac key given by the server for later use in reauthentication
             with open("keys/shared/hmac_key.txt", "wb") as writer:
                 writer.write(key)
         else:

@@ -7,13 +7,14 @@ and return them in the form of bytes.
 This identity keypair is a ED25519 keypair that is used by the client and server to verify each other outside the Noise protocol
 """
 
-from os.path import exists
 from os import getenv
-from hvac import Client
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-from cryptography.hazmat.primitives import serialization
+from os.path import exists
 from pathlib import Path
+
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from dotenv import load_dotenv
+from hvac import Client
 
 load_dotenv()
 
@@ -26,13 +27,27 @@ def generate_ED25519_keypair_server_bytes(
     pickled_server_static: str,
 ) -> tuple[bytes, bytes]:
     """Generate ED25519 keypair and store to Hashicorp Vault if it does not exist, else read from Vault
+
+    The function will use the loaded environment variables VAULT_HOST and VAULT_TOKEN for authorization to access and write to
+    Hashicorp Vault. Vault's key value store is being used as a database by the server for storing established symmetric keys
+    and public keys relating to clients. Along with their own identity keypair and noise static keypair.
+
+    First, a check is done to see if the server has an existing long term identity keypair. If it does not, the server
+    generates it, converts to bytes and then to a hexstring, which is then finally stored in the server path of Vault.
+    If a identity keypair exists, the server reads it from the Vault and returns the public and private key values in bytes
     Parameters
     ----------
     pickled_server_static:str
+      This is the noise static keypair that has been serialized for storage in the Vault. It is passed so that it can be
+      written into the new version of the server paths secret key along with the identity keypair.
+      Due to the versioned nature of the key value store in Vault, if only the identity keypair is passed to server path,
+      and server static keypair value already exists, it does not update, instead it overwrites this value as the new version.
     Returns
     -------
     public_bytes:bytes
+      Returns the public key in bytes form of the identity keypair.
     private_bytes:bytes
+      Returns the private key in bytes form of the identity keypair.
     """
     client = Client(url=getenv("VAULT_HOST"), token=getenv("VAULT_TOKEN"))
     response = client.secrets.kv.read_secret_version("server")
@@ -78,10 +93,16 @@ def generate_ED25519_keypair_server_bytes(
 
 def generate_ED25519_keypair_client_bytes() -> tuple[bytes, bytes]:
     """Generate ED25519 keypair and store in a file if it does not exist, else read from existing file
+
+    Based on whether a file exists, primarily, the private key file, the function will decide whether to read from existing
+    file the private key value, or generate a new keypair to write. At the end, both the public and private key in bytes is
+    returned.
     Returns
     -------
     public_bytes:bytes
+      Returns the public key in bytes form of the identity keypair.
     private_bytes:bytes
+      Returns the private key in bytes form of the identity keypair.
     """
     if exists((base_path / "../keys/client/private_key.txt").resolve()):
         with open(

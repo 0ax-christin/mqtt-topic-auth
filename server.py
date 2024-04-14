@@ -16,6 +16,7 @@ from dissononce.processing.impl.cipherstate import CipherState
 from dissononce.processing.handshakepatterns.interactive.XX import XXHandshakePattern
 from dissononce.cipher.chachapoly import ChaChaPolyCipher
 from dissononce.dh.x25519.x25519 import X25519DH
+from dissononce.dh.keypair import KeyPair
 from dissononce.hash.blake2s import Blake2sHash
 
 from keygen.generate_keys import generate_ED25519_keypair_server_bytes
@@ -50,9 +51,18 @@ HOST = "127.0.0.1"
 PORT = 63000
 
 
-def public_key_exists(public_bytes):
-    """
-    Check that a given public key in byte string exists in authorized_keys
+def public_key_exists(public_bytes: bytes) -> bool:
+    """Check that a given public key in bytes exists as an entry in authorized_keys
+    Params
+    ------
+    public_bytes: bytes
+      Public keys are serialized as bytes when stored in a file. Each entry of authorized_keys is 32 bytes. This is parameter is
+      the input that is searched across the files entries to see if it exists'
+    Returns
+    -------
+    True|False: bool
+      True if public key exists
+      False if it does not exist
     """
     if exists("authorized_keys"):
         with open("authorized_keys", "rb") as reader:
@@ -63,7 +73,19 @@ def public_key_exists(public_bytes):
                     return False
 
 
-def setup_static_keypair():
+def setup_static_keypair() -> KeyPair:
+    """Checks whether Noise static keypair is in Vault, if not, it generates it, else reads it and returns the value
+
+    Noise static keypair when stored in vault, is serialized using pickle into a hexstring such that it is compatible
+    with the format of storage in Vault's key value database. Whether a new Noise keypair is generated or an existing one
+    is retrieved, it is first deserialized into the KeyPair object before being returned
+    Returns
+    -------
+      server_static: KeyPair
+      Returns a KeyPair object, which holds both the servers long term public and private key in one data structure.
+      Under the hood, Pythons cryptography library is used to generate the actual keypairs. This is used as the
+      static key which represents a party's identity in the Noise handshake
+    """
     client = hvac.Client(url=getenv("VAULT_HOST"), token=getenv("VAULT_TOKEN"))
     try:
         response = client.secrets.kv.read_secret_version("server")
@@ -114,7 +136,7 @@ server_static = setup_static_keypair()
 private_bytes, public_bytes = generate_ED25519_keypair_server_bytes(
     pickled_server_static=dumps(server_static).hex()
 )
-# Temporary solution: Write update server public and private key file
+# Temporary solution for testing purposes: Write update server public and private key file
 # As whenever Vault restarts in dev mode, the database is fresh, so it generates a new keypair
 # Must make sure client has the correct key pair in memory
 print(public_bytes)
@@ -186,6 +208,7 @@ class ForkedTCPRequestHandler(StreamRequestHandler):
                 self.wfile.close()
                 exit()
         else:
+            # If the key sent by the client was not in authorized_keys, then send back an error
             print("Sent public key not in authorized_keys!")
             unauthorized_key_reply = generate_status_reply_bytes(statusCode=403)
             self.wfile.write(unauthorized_key_reply)
@@ -226,7 +249,8 @@ class ForkedTCPRequestHandler(StreamRequestHandler):
         # Initialize a secret path with the identifier of the clients public key, where the
         # pickled established cipherstates from a noise handshake and the generated HMAC key are stored
         # The assumption is that a registering client device has not registered previously and thus would
-        # not have a path. This part of the code creates the path
+        # not have a path. This part of the code creates the path.
+        # Even if there was an existing entry, it would simply be overwritten with a new version
         client.secrets.kv.v2.create_or_update_secret(
             path=client_public_bytes.hex(),
             secret=dict(established_cipherstates="", hmac_key=""),

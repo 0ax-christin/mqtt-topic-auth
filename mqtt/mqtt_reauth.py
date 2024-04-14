@@ -42,6 +42,24 @@ MQTTConnectionState = namedtuple(
 async def get_subscribed_topic(
     mqtt_username: str, mqtt_password: str, mqtt_topic: str
 ) -> bytes:
+    """ Given the user account credentials for MQTT and a topic, fetch any new messages published on the channel
+
+    In this case it used by the participants of reauthentication via MQTT topic (the server and the client) for fetching any
+    published messages from each other
+    Params
+    ------
+    mqtt_username: str
+      MQTT username which is meant to have the correct access rights to subscribe and receive published messages from the topic
+    mqtt_password: str
+      MQTT password which is used to authenticate the MQTT user
+    mqtt_topic: str
+      The reauthentication topic from which published messages will be read
+    Return
+    ------
+      payload_bytes: bytes
+      The sent message is a CapnProto object made from the Request Schema. The payload of the PUBLISH message, which is the
+      CapnProto object is extracted and returned to the caller of the function
+    """   
     async with aiomqtt.Client(
         hostname=getenv("HOSTNAME"),
         port=int(getenv("PORT")),
@@ -59,6 +77,18 @@ async def get_subscribed_topic(
 async def publish_to_topic(
     mqtt_username: str, mqtt_password: str, mqtt_topic: str, mqtt_payload: bytes
 ):
+    """ Publish on an MQTT topic with a given payload using the credentials of the given MQTT account
+    Params
+    ------
+    mqtt_username: str
+      MQTT username which is meant to have the correct access rights to subscribe and receive published messages from the topic
+    mqtt_password: str
+      MQTT password which is used to authenticate the MQTT user
+    mqtt_topic: str
+      The reauthentication topic on which the payload will be published
+    mqtt_payload: bytes
+      The actual payload in bytes. In the context of this protocol, usually CapnProto objects
+    """
     async with aiomqtt.Client(
         hostname=getenv("HOSTNAME"),
         port=int(getenv("PORT")),
@@ -69,7 +99,20 @@ async def publish_to_topic(
         await client.publish(mqtt_topic, payload=mqtt_payload)
 
 
-def generate_random_seed_bytes(seed, reauth_number):
+def generate_random_seed_bytes(seed: bytes, reauth_number: int) -> bytes:
+    """Given the secret seed known only to the server and client, and the reauthentication number, generate 48 random bytes
+    Params
+    ------
+    seed: bytes
+      Secret seed shared between client and server used to generate the solution for a given reauthentication
+    reauth_number: int
+      The reauthentication number indicating the current reauthentication, used to generate the nth in a set of 48 bytes
+    Return
+    ------
+    rand_bytes: bytes
+      The random bytes generated for this specific reauthentication (indicated by the reauthentication number) which is required
+      as part of the secret solution to the reauthentication challenge
+    """
     random.seed(seed)
     rand_bytes = b""
     for i in range(reauth_number):
