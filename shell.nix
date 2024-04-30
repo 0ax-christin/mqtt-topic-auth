@@ -6,18 +6,8 @@ in
 with pkgs; mkShell {
   packages = [
     git
-    # (python3.withPackages (python-pkgs: with python-pkgs; [
-    #   dissononce
-    #   transitions
-    #   cryptography
-    #   pycapnp
-    #   python-dotenv
-    #   aiomqtt
-    #   hvac
-    # ]))
-    neovim
+    python3
     capnproto
     poetry
-    vault
   ];
 }
